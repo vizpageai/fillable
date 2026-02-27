@@ -1,0 +1,45 @@
+# Python cache/bytecode
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging/build artifacts
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# PyInstaller
+*.spec.bak
+
+# App/runtime output files
+*.fillable.json
+*.template.docx
+*.template.pptx
+*.template.pdf
+*.template.txt
+*.template.filled.docx
+*.template.filled.pptx
+*.template.filled.pdf
+*.template.filled.txt
+*.filled.docx
+*.filled.pptx
+*.filled.pdf
+*.filled.txt
+*.batch/
+
+# Local app/user config
+config.json
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+example/
