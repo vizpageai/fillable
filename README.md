@@ -56,12 +56,18 @@ python scripts\install_context_menu.py
 
 If using packaged EXE:
 ```powershell
-python scripts\install_context_menu.py --exe "C:\path\to\Fillable.exe"
+python scripts\install_context_menu.py --exe "C:\path\to\FillableDOC.exe"
 ```
 
 Remove integration:
 ```powershell
 python scripts\uninstall_context_menu.py
+```
+
+CLI alternatives (works with EXE too):
+```powershell
+python run_fillable.py --install-context-menu
+python run_fillable.py --uninstall-context-menu
 ```
 
 ## CLI usage
@@ -100,7 +106,64 @@ Batch file notes:
 powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
 ```
 Output:
-- `dist\Fillable.exe`
+- `dist\FillableDOC.exe`
+
+## Build installer for Microsoft Store (Win32 submission path)
+This project includes an Inno Setup installer that:
+- Installs `FillableDOC.exe`
+- Registers right-click context menu on install
+- Removes right-click context menu on uninstall
+
+Build steps:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_store_installer.ps1
+```
+Output:
+- `dist\installer\FillableDOC-Setup.exe`
+
+If `ISCC.exe` is installed at a different location:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_store_installer.ps1 -IsccPath "C:\Path\To\ISCC.exe"
+```
+
+Store submission notes: `docs/MICROSOFT_STORE.md`
+
+## Build MSI (WiX Toolset)
+Install WiX Toolset v4:
+```powershell
+winget install WiXToolset.WiXToolset
+```
+
+Build MSI:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_msi.ps1
+```
+
+If `wix` is not on PATH, pass full path:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_msi.ps1 -WixPath "C:\Program Files\WiX Toolset v4.0\bin\wix.exe"
+```
+
+Output:
+- `dist\installer\FillableDOC.msi`
+
+## Sign release binaries (Microsoft Store)
+Sign app EXE and installer outputs with your code-signing certificate:
+
+Sign EXE + Setup EXE:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\sign_release.ps1 -CertPath "C:\path\codesign.pfx" -PromptForPassword -IncludeSetupExe
+```
+
+Sign EXE + MSI:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\sign_release.ps1 -CertPath "C:\path\codesign.pfx" -PromptForPassword -IncludeMsi
+```
+
+Verify signatures:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\verify_signatures.ps1 -IncludeSetupExe
+```
 
 ## Notes and limitations
 - `.docx` and `.pptx` replacements are text-based and may miss placeholders split across runs.

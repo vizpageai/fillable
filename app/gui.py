@@ -128,7 +128,7 @@ class FillableApp(tk.Tk):
 
         header = ttk.Frame(root, style="App.TFrame")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        ttk.Label(header, text="Fillable", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(header, text=APP_NAME, style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             header,
             text="Generate template placeholders and fill documents with Codex.",

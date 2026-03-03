@@ -31,7 +31,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Fillable',
+    name='FillableDOC',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -42,6 +42,7 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
+    version='packaging/windows_version_info.txt',
     codesign_identity=None,
     entitlements_file=None,
 )

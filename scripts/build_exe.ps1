@@ -10,9 +10,10 @@ param(
     --noconfirm `
     --onefile `
     --windowed `
-    --name Fillable `
+    --name FillableDOC `
+    --version-file packaging\windows_version_info.txt `
     --collect-all docx `
     --collect-all pptx `
     run_fillable.py
 
-Write-Host "Built dist\\Fillable.exe"
+Write-Host "Built dist\\FillableDOC.exe"

@@ -2,94 +2,29 @@ from __future__ import annotations
 
 import argparse
 import sys
-import winreg
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-def set_value(root, subkey: str, name: str, value: str) -> None:
-    key = winreg.CreateKey(root, subkey)
-    winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
-    winreg.CloseKey(key)
-
-
-def make_command(exe: str | None, project_root: Path) -> str:
-    if exe:
-        return f'"{exe}" "%1"'
-
-    py = sys.executable
-    main_py = project_root / "run_fillable.py"
-    return f'"{py}" "{main_py}" "%1"'
-
-
-def make_generate_command(exe: str | None, project_root: Path) -> str:
-    if exe:
-        return f'"{exe}" --generate-template "%1"'
-
-    py = sys.executable
-    main_py = project_root / "run_fillable.py"
-    return f'"{py}" "{main_py}" --generate-template "%1"'
-
-
-def make_fill_command(exe: str | None, project_root: Path) -> str:
-    if exe:
-        return f'"{exe}" --fill-template "%1" --prompt-instructions'
-
-    py = sys.executable
-    main_py = project_root / "run_fillable.py"
-    return f'"{py}" "{main_py}" --fill-template "%1" --prompt-instructions'
-
-
-def install(exe: str | None) -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    generate_command = make_generate_command(exe, project_root)
-    open_template_command = make_command(exe, project_root)
-    fill_template_command = make_fill_command(exe, project_root)
-
-    for ext in [".docx", ".pptx", ".pdf"]:
-        base = fr"Software\Classes\SystemFileAssociations\{ext}\shell\FillableGenerateTemplate"
-        set_value(winreg.HKEY_CURRENT_USER, base, "", "Generate AI Template (Codex)")
-        set_value(winreg.HKEY_CURRENT_USER, base, "Icon", "imageres.dll,-5302")
-        set_value(winreg.HKEY_CURRENT_USER, base + r"\command", "", generate_command)
-
-    set_value(winreg.HKEY_CURRENT_USER, r"Software\Classes\.fillable.json", "", "Fillable.Template")
-    set_value(winreg.HKEY_CURRENT_USER, r"Software\Classes\Fillable.Template", "", "Fillable Template")
-    set_value(
-        winreg.HKEY_CURRENT_USER,
-        r"Software\Classes\Fillable.Template\shell\FillTemplate",
-        "",
-        "Fill Template (Codex)",
-    )
-    set_value(
-        winreg.HKEY_CURRENT_USER,
-        r"Software\Classes\Fillable.Template\shell\FillTemplate",
-        "Icon",
-        "imageres.dll,-5302",
-    )
-    set_value(
-        winreg.HKEY_CURRENT_USER,
-        r"Software\Classes\Fillable.Template\shell\FillTemplate\command",
-        "",
-        fill_template_command,
-    )
-    set_value(
-        winreg.HKEY_CURRENT_USER,
-        r"Software\Classes\Fillable.Template\shell\open\command",
-        "",
-        open_template_command,
-    )
-
-    for ext in [".docx", ".pptx", ".pdf", ".txt", ".json"]:
-        base = fr"Software\Classes\SystemFileAssociations\{ext}\shell\FillableFillTemplate"
-        set_value(winreg.HKEY_CURRENT_USER, base, "", "Fill Template (Codex)")
-        set_value(winreg.HKEY_CURRENT_USER, base, "Icon", "imageres.dll,-5302")
-        set_value(winreg.HKEY_CURRENT_USER, base + r"\command", "", fill_template_command)
+from app.context_menu import install_context_menu
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exe", default="", help="Path to built Fillable.exe")
+    parser.add_argument("--exe", default="", help="Path to built FillableDOC.exe")
+    parser.add_argument(
+        "--no-prompt-instructions",
+        action="store_true",
+        help="Disable instruction prompt when using right-click Fill action.",
+    )
     args = parser.parse_args()
-    install(args.exe or None)
+
+    install_context_menu(
+        exe_override=(args.exe.strip() or None),
+        prompt_instructions=not args.no_prompt_instructions,
+    )
     print("Context menu installed for current user.")
     return 0
 

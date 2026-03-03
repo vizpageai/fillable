@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from app.codex_cli import CodexCli
+from app.context_menu import install_context_menu, uninstall_context_menu
 from app.template_engine import (
     create_template_from_user_template,
     fill_template,
@@ -33,6 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prompt in terminal for fill instructions before calling AI.",
     )
     parser.add_argument("--print-config", action="store_true")
+    parser.add_argument("--install-context-menu", action="store_true")
+    parser.add_argument("--uninstall-context-menu", action="store_true")
+    parser.add_argument("--context-menu-exe", type=str, default="")
+    parser.add_argument("--no-prompt-in-context-menu", action="store_true")
     return parser
 
 
@@ -59,6 +64,19 @@ def _resolve_fill_template_target(path: Path) -> Path:
 
 def run_cli(args: argparse.Namespace) -> int:
     config = load_config()
+    if args.install_context_menu:
+        install_context_menu(
+            exe_override=(args.context_menu_exe.strip() or None),
+            prompt_instructions=not args.no_prompt_in_context_menu,
+        )
+        print("Context menu installed for current user.")
+        return 0
+
+    if args.uninstall_context_menu:
+        uninstall_context_menu()
+        print("Context menu removed for current user.")
+        return 0
+
     if args.print_config:
         print(f"codex_command_template={config.codex_command_template}")
         return 0
