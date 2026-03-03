@@ -147,6 +147,18 @@ powershell -ExecutionPolicy Bypass -File scripts\build_msi.ps1 -WixPath "C:\Prog
 Output:
 - `dist\installer\FillableDOC.msi`
 
+## Build MSIX (GitHub Actions)
+Workflow file:
+- `.github/workflows/build-msix.yml`
+
+It builds `dist/msix/*.msix` on `windows-latest`.
+
+Optional signing secrets in GitHub Actions:
+- `MSIX_CERT_BASE64`: Base64 of your `.pfx` certificate
+- `MSIX_CERT_PASSWORD`: PFX password
+
+If secrets are not set, the workflow still builds an unsigned MSIX.
+
 ## Sign release binaries (Microsoft Store)
 Sign app EXE and installer outputs with your code-signing certificate:
 

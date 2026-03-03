@@ -1,0 +1,75 @@
+name: Build MSIX
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional MSIX version (x.x.x.x). Leave blank to use app/version.py.
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-msix:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    env:
+      PACKAGE_NAME: VizpageAI.FillableDOC
+      PUBLISHER: CN=VizpageAI
+      DISPLAY_NAME: FillableDOC
+      PUBLISHER_DISPLAY_NAME: VizpageAI
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Restore signing cert from secret
+        if: ${{ secrets.MSIX_CERT_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $bytes = [Convert]::FromBase64String("${{ secrets.MSIX_CERT_BASE64 }}")
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\msix_cert.pfx", $bytes)
+          "MSIX_CERT_PATH=$env:RUNNER_TEMP\msix_cert.pfx" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build MSIX
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          $args = @(
+            "-ExecutionPolicy", "Bypass",
+            "-File", "scripts/build_msix.ps1",
+            "-PackageName", "$env:PACKAGE_NAME",
+            "-Publisher", "$env:PUBLISHER",
+            "-DisplayName", "$env:DISPLAY_NAME",
+            "-PublisherDisplayName", "$env:PUBLISHER_DISPLAY_NAME"
+          )
+          if ($version) {
+            $args += @("-Version", $version)
+          }
+          if ($env:MSIX_CERT_PATH) {
+            $args += @("-CertPath", $env:MSIX_CERT_PATH, "-CertPassword", "${{ secrets.MSIX_CERT_PASSWORD }}")
+          }
+          powershell @args
+
+      - name: Upload MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: msix-package
+          path: dist/msix/*.msix
+          if-no-files-found: error
