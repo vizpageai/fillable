@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -47,6 +48,7 @@ class FillableApp(tk.Tk):
         self.subscription_token_entry = None
 
         self._init_styles()
+        self._set_window_icon()
         self.bg_canvas = tk.Canvas(self, highlightthickness=0, bd=0)
         self.bg_canvas.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.page_container = ttk.Frame(self, style="App.TFrame")
@@ -184,6 +186,21 @@ class FillableApp(tk.Tk):
             outline="",
             tags="bg",
         )
+
+    @staticmethod
+    def _resource_path(filename: str) -> Path:
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+        return base / filename
+
+    def _set_window_icon(self) -> None:
+        ico_path = self._resource_path("fillableicon.ico")
+        if ico_path.exists() and sys.platform.startswith("win"):
+            try:
+                self.iconbitmap(str(ico_path))
+                return
+            except Exception:
+                pass
+        return
 
     def _build_onboarding_ui(self) -> None:
         root = ttk.Frame(self.onboarding_page, style="App.TFrame", padding=(24, 20))

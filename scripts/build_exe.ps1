@@ -11,6 +11,8 @@ param(
     --onefile `
     --windowed `
     --name FillableDOC `
+    --icon fillableicon.ico `
+    --add-data "fillableicon.ico;." `
     --version-file packaging\windows_version_info.txt `
     --collect-all docx `
     --collect-all pptx `

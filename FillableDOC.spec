@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = []
+datas = [('fillableicon.ico', '.')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('docx')
@@ -45,4 +45,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version='packaging\\windows_version_info.txt',
+    icon=['fillableicon.ico'],
 )
