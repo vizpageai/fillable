@@ -69,6 +69,10 @@ class FillableTemplate:
 
 @dataclass
 class AppConfig:
+    ai_mode: str = "user_key"
+    openai_model: str = "gpt-4.1-mini"
+    openai_api_base: str = "https://api.openai.com/v1"
+    subscription_api_base: str = ""
     codex_command_template: str = (
         'Get-Content -Raw "{prompt_file}" | codex exec --skip-git-repo-check --output-last-message "{output_file}"'
     )

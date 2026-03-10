@@ -1,13 +1,13 @@
 # Fillable
 
-Windows desktop app that uses Codex CLI to:
+Windows desktop app that uses OpenAI to:
 - Generate AI placeholder templates from `.docx`, `.pptx`, `.pdf`
 - Import your own template file and build `.fillable.json` metadata
 - Fill template placeholders with AI-generated content
 - Add Explorer right-click actions for one-click template generation
 
 ## Features
-- Right-click `.docx/.pptx/.pdf` -> `Generate AI Template (Codex)`
+- Right-click `.docx/.pptx/.pdf` -> `Generate AI Template (OpenAI)`
 - Produces:
   - `yourfile.template.<ext>` (or `yourfile.template.txt` for non-form PDFs)
   - `yourfile.fillable.json` metadata template
@@ -16,14 +16,14 @@ Windows desktop app that uses Codex CLI to:
   - Replaces blanks with placeholders (instead of replacing existing content text)
   - Falls back to snippet replacement only when no blank regions are found
 - Double-click `*.fillable.json` to open Fillable UI and run fill
-- Optional extra context files (`.docx/.pptx/.pdf/.txt/.md`) sent to Codex during fill
+- Optional extra context files (`.docx/.pptx/.pdf/.txt/.md`) sent to OpenAI during fill
 - Edit generated/imported `.fillable.json` templates in-app before filling
 - Open and edit the generated `.template` document before running fill
 
 ## Requirements
 - Windows 10/11
 - Python 3.10+
-- Codex CLI installed and available in PATH (default command uses `codex exec`)
+- Internet access to call OpenAI APIs or your subscription backend
 
 ## Setup
 1. Install dependencies:
@@ -35,18 +35,17 @@ python -m pip install -r requirements.txt
 python run_fillable.py
 ```
 
-## Configure Codex command
-In the app, set `Codex command template`.
-It must include `{prompt}`.
+## Configure AI access
+In the app Settings, choose one mode:
+- `user_key`: user provides their own OpenAI API key
+- `app_subscription`: app calls your backend proxy (backend uses your OpenAI API key)
 
-Default:
-```text
-Get-Content -Raw "{prompt_file}" | codex exec --skip-git-repo-check --output-last-message "{output_file}"
-```
-
-Supported placeholders in this command template: `{prompt}`, `{prompt_file}`, `{output_file}`, `{schema_file}`.
-
-If your Codex CLI uses different flags, replace this command accordingly.
+Security:
+- User API key is secured with Windows DPAPI in the per-user app data folder (not in `config.json`)
+- Subscription token is stored in Windows Credential Manager (not in `config.json`)
+- `config.json` stores only non-secret settings (mode/model/base URLs)
+- Backend proxy contract: `docs/SUBSCRIPTION_BACKEND_API.md`
+- First launch shows an onboarding screen asking for OpenAI API key, then opens the main app page.
 
 ## Install right-click context menu (current user)
 From project root:
@@ -97,9 +96,18 @@ python run_fillable.py --fill-template "C:\docs\input.fillable.json" --batch-dat
 ```
 
 Batch file notes:
-- `.csv`: headers can differ from placeholder names; batch mode uses Codex to map columns to placeholders
+- `.csv`: headers can differ from placeholder names; batch mode uses AI to map columns to placeholders
 - `.json`: either an array of objects or `{ "records": [ ... ] }`
-- `--instructions` also applies in batch mode (per-record generation through Codex)
+- `--instructions` also applies in batch mode (per-record generation through AI)
+
+Configure AI settings via CLI:
+```powershell
+python run_fillable.py --set-ai-mode user_key --set-openai-model gpt-4.1-mini
+python run_fillable.py --set-user-openai-key "sk-..."
+python run_fillable.py --set-ai-mode app_subscription --set-subscription-api-base "https://api.yourdomain.com"
+python run_fillable.py --set-subscription-token "your-issued-token"
+python run_fillable.py --print-config
+```
 
 ## Build standalone EXE
 ```powershell
@@ -182,4 +190,4 @@ powershell -ExecutionPolicy Bypass -File scripts\verify_signatures.ps1 -IncludeS
 - PDFs:
   - If PDF has AcroForm fields, app fills those fields directly and outputs `*.filled.pdf`.
   - For non-form PDFs, app creates `*.template.txt` and outputs `*.filled.txt`.
-- Codex output must include valid JSON; prompts enforce this, but model/tool changes can still require command adjustment.
+- Model output must include valid JSON; prompts enforce this, but model changes can still require prompt tuning.

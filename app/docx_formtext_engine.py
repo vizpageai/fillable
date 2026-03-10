@@ -129,7 +129,7 @@ def generate_docx_formtext_template(
                 f"{sample}\n\n"
                 f"Fields:\n{[{ 'field_index': f['field_index'], 'nearby_label': f['nearby_label']} for f in fields]}"
             )
-            log(f"Detected {len(fields)} FORMTEXT blanks. Calling Codex for field names...")
+            log(f"Detected {len(fields)} FORMTEXT blanks. Calling AI for field names...")
             result = codex.run_json_prompt(prompt)
             items = result.parsed_json.get("labels", [])
 

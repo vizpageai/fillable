@@ -68,7 +68,7 @@ def install_context_menu(
 
     for ext in [".docx", ".pptx", ".pdf"]:
         base = fr"Software\Classes\SystemFileAssociations\{ext}\shell\FillableGenerateTemplate"
-        _set_value(winreg.HKEY_CURRENT_USER, base, "", "Generate AI Template (Codex)")
+        _set_value(winreg.HKEY_CURRENT_USER, base, "", "Generate AI Template (OpenAI)")
         _set_value(winreg.HKEY_CURRENT_USER, base, "Icon", "imageres.dll,-5302")
         _set_value(winreg.HKEY_CURRENT_USER, base + r"\command", "", generate_command)
 
@@ -78,7 +78,7 @@ def install_context_menu(
         winreg.HKEY_CURRENT_USER,
         r"Software\Classes\Fillable.Template\shell\FillTemplate",
         "",
-        "Fill Template (Codex)",
+        "Fill Template (OpenAI)",
     )
     _set_value(
         winreg.HKEY_CURRENT_USER,
@@ -101,7 +101,7 @@ def install_context_menu(
 
     for ext in [".docx", ".pptx", ".pdf", ".txt", ".json"]:
         base = fr"Software\Classes\SystemFileAssociations\{ext}\shell\FillableFillTemplate"
-        _set_value(winreg.HKEY_CURRENT_USER, base, "", "Fill Template (Codex)")
+        _set_value(winreg.HKEY_CURRENT_USER, base, "", "Fill Template (OpenAI)")
         _set_value(winreg.HKEY_CURRENT_USER, base, "Icon", "imageres.dll,-5302")
         _set_value(winreg.HKEY_CURRENT_USER, base + r"\command", "", fill_template_command)
 

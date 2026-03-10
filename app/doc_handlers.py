@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
+from pypdf.generic import BooleanObject, NameObject, TextStringObject
 from docx import Document
 from pptx import Presentation
 
@@ -302,7 +303,88 @@ def list_pdf_form_fields(path: Path) -> list[str]:
     fields = reader.get_fields()
     if not fields:
         return []
-    return sorted(fields.keys())
+    names: list[str] = []
+    for name, field in fields.items():
+        if not field:
+            continue
+        if field.get("/FT") is None:
+            continue
+        names.append(str(name))
+    return sorted(set(names))
+
+
+def _extract_on_state(field: dict) -> str:
+    states = field.get("/_States_")
+    if states:
+        for state in states:
+            s = str(state)
+            if s != "/Off":
+                return s
+    ap = field.get("/AP")
+    if not ap:
+        return "/Yes"
+    normal = ap.get("/N") if hasattr(ap, "get") else None
+    if not normal:
+        return "/Yes"
+    keys = [str(k) for k in normal.keys()]
+    for k in keys:
+        if k != "/Off":
+            return k
+    return "/Yes"
+
+
+def _resolve_inherited(widget: dict, key: str):
+    current = widget
+    for _ in range(24):
+        if key in current:
+            return current[key]
+        parent = current.get("/Parent")
+        if not parent:
+            break
+        current = parent.get_object()
+    return None
+
+
+def _qualified_widget_name(widget: dict) -> str:
+    parts: list[str] = []
+    current = widget
+    for _ in range(24):
+        name = current.get("/T")
+        if name:
+            parts.append(str(name))
+        parent = current.get("/Parent")
+        if not parent:
+            break
+        current = parent.get_object()
+    return ".".join(reversed(parts))
+
+
+def _set_widget_value(widget: dict, value: object) -> None:
+    widget[NameObject("/V")] = value
+    parent = widget.get("/Parent")
+    if parent:
+        p = parent.get_object()
+        p[NameObject("/V")] = value
+
+
+def _normalize_pdf_value(field_name: str, field: dict, raw: str) -> object:
+    ft = str(field.get("/FT") or "")
+    text = str(raw if raw is not None else "").strip()
+    if ft == "/Btn":
+        lowered = text.lower()
+        on_state = _extract_on_state(field)
+        if text.startswith("/") and text in {"/Off", on_state}:
+            return NameObject(text)
+        if text and ("/" + text) in {"/Off", on_state}:
+            return NameObject("/" + text)
+        if lowered in {"1", "true", "yes", "y", "checked", "check", "on", "x"}:
+            return NameObject(on_state)
+        if lowered in {"0", "false", "no", "n", "unchecked", "off", ""}:
+            return NameObject("/Off")
+        return NameObject(on_state)
+    if ft in {"/Tx", "/Ch"}:
+        return text
+    return text
 
 
 def replace_in_docx(source: Path, destination: Path, replacements: dict[str, str]) -> None:
@@ -361,12 +443,67 @@ def replace_in_text(source: Path, destination: Path, replacements: dict[str, str
 def fill_pdf_form(source: Path, destination: Path, values: dict[str, str]) -> None:
     reader = PdfReader(str(source))
     writer = PdfWriter()
-    writer.append_pages_from_reader(reader)
 
+    # Clone full reader structure first so AcroForm metadata is preserved.
+    writer.clone_document_from_reader(reader)
+
+    # Some PDFs still miss /AcroForm in writer root after clone; copy it explicitly.
+    reader_root = reader.trailer.get("/Root", {})
+    writer_root = writer._root_object
+    if "/AcroForm" not in writer_root and "/AcroForm" in reader_root:
+        writer_root[NameObject("/AcroForm")] = reader_root["/AcroForm"]
+    acro = writer_root.get("/AcroForm")
+    if acro:
+        acro_obj = acro.get_object()
+        if "/XFA" in acro_obj:
+            # XFA often overrides AcroForm values and causes viewers to show fields as blank.
+            del acro_obj[NameObject("/XFA")]
+        acro_obj[NameObject("/NeedAppearances")] = BooleanObject(True)
+
+    fields = reader.get_fields() or {}
+    normalized_values: dict[str, object] = {}
+    for field_name, field in fields.items():
+        if not field or field.get("/FT") is None:
+            continue
+        if field_name not in values:
+            continue
+        normalized_values[field_name] = _normalize_pdf_value(field_name, field, values[field_name])
+
+    # Fallback for callers that already provide exact field names without field metadata.
+    if not normalized_values:
+        normalized_values = {str(k): str(v) for k, v in values.items()}
+
+    # Fill widgets by fully-qualified field path to avoid writing to similarly named fields.
     for page in writer.pages:
-        writer.update_page_form_field_values(page, values)
+        annots = page.get("/Annots") or []
+        for annot_ref in annots:
+            annot = annot_ref.get_object()
+            if str(annot.get("/Subtype", "")) != "/Widget":
+                continue
+            full_name = _qualified_widget_name(annot)
+            short_name = str(annot.get("/T", ""))
+            if full_name in normalized_values:
+                normalized = normalized_values[full_name]
+            elif short_name in normalized_values:
+                normalized = normalized_values[short_name]
+            else:
+                continue
 
-    writer.clone_reader_document_root(reader)
+            ft = str(_resolve_inherited(annot, "/FT") or "")
+            if ft == "/Btn":
+                if isinstance(normalized, NameObject):
+                    chosen = normalized
+                else:
+                    chosen = NameObject(str(normalized))
+                on_state = _extract_on_state(annot)
+                if str(chosen) != "/Off" and str(chosen) != on_state:
+                    chosen = NameObject(on_state)
+                _set_widget_value(annot, chosen)
+                annot[NameObject("/AS")] = chosen
+            else:
+                txt = normalized if isinstance(normalized, TextStringObject) else TextStringObject(str(normalized))
+                _set_widget_value(annot, txt)
+
     with destination.open("wb") as f:
         writer.write(f)
 

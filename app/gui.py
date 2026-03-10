@@ -5,7 +5,13 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from app.codex_cli import CodexCli, CodexCliError
+from app.codex_cli import (
+    SUBSCRIPTION_TOKEN_TARGET,
+    USER_OPENAI_KEY_TARGET,
+    CodexCli,
+    CodexCliError,
+)
+from app.secure_store import get_secret, get_user_openai_key, set_secret, set_user_openai_key
 from app.template_engine import (
     create_template_from_user_template,
     fill_template,
@@ -19,7 +25,7 @@ from app.version import APP_NAME, APP_VERSION
 class FillableApp(tk.Tk):
     def __init__(self, initial_generate: str | None = None, initial_template: str | None = None):
         super().__init__()
-        self.title(f"{APP_NAME} {APP_VERSION} - Codex Document Autofill")
+        self.title(f"{APP_NAME} {APP_VERSION} - FillableDOC Document Autofill")
         self.geometry("1080x760")
         self.minsize(960, 700)
 
@@ -28,20 +34,46 @@ class FillableApp(tk.Tk):
         self.template_var = tk.StringVar(value=initial_template or "")
         self.source_has_placeholders_var = tk.BooleanVar(value=False)
         self.batch_data_var = tk.StringVar(value="")
-        self.codex_command_var = tk.StringVar(value=self.config_data.codex_command_template)
+        self.ai_mode_var = tk.StringVar(value=self.config_data.ai_mode)
+        self.openai_model_var = tk.StringVar(value=self.config_data.openai_model)
+        self.openai_api_base_var = tk.StringVar(value=self.config_data.openai_api_base)
+        self.subscription_api_base_var = tk.StringVar(value=self.config_data.subscription_api_base)
+        self.user_api_key_var = tk.StringVar(value=get_user_openai_key(USER_OPENAI_KEY_TARGET) or "")
+        self.subscription_token_var = tk.StringVar(value=get_secret(SUBSCRIPTION_TOKEN_TARGET) or "")
+        self.onboarding_api_key_var = tk.StringVar(value="")
+        self.settings_window: tk.Toplevel | None = None
+        self.user_api_key_entry = None
+        self.subscription_api_base_entry = None
+        self.subscription_token_entry = None
 
         self._init_styles()
-        self._build_ui()
+        self.bg_canvas = tk.Canvas(self, highlightthickness=0, bd=0)
+        self.bg_canvas.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.page_container = ttk.Frame(self, style="App.TFrame")
+        self.page_container.place(relx=0.02, rely=0.02, relwidth=0.96, relheight=0.96)
+        self.page_container.lift()
+        self.bind("<Configure>", self._on_resize)
+        self.onboarding_page = ttk.Frame(self.page_container, style="App.TFrame")
+        self.app_page = ttk.Frame(self.page_container, style="App.TFrame")
+        self._build_onboarding_ui()
+        self._build_ui(self.app_page)
+        self._refresh_mode_ui()
+        self._show_initial_page()
 
     def _init_styles(self) -> None:
         self.colors = {
-            "bg": "#F4F7FB",
+            "bg": "#F7F2EC",
+            "bg_start": "#F8EFE6",
+            "bg_end": "#E6EFF7",
             "card": "#FFFFFF",
-            "text": "#0F172A",
-            "muted": "#475569",
-            "line": "#D8E0EB",
-            "accent": "#0B7285",
-            "accent_hover": "#095C6B",
+            "text": "#1C1B1F",
+            "muted": "#5E6B78",
+            "line": "#D9D0C7",
+            "accent": "#C65F3D",
+            "accent_hover": "#B15435",
+            "glow_1": "#FADFD1",
+            "glow_2": "#D6EEF3",
+            "glow_3": "#F5E7D3",
         }
         self.configure(bg=self.colors["bg"])
 
@@ -57,13 +89,13 @@ class FillableApp(tk.Tk):
             "Title.TLabel",
             background=self.colors["bg"],
             foreground=self.colors["text"],
-            font=("Segoe UI Semibold", 18),
+            font=("Bahnschrift SemiBold", 20),
         )
         style.configure(
             "Subtitle.TLabel",
             background=self.colors["bg"],
             foreground=self.colors["muted"],
-            font=("Segoe UI", 10),
+            font=("Bahnschrift", 11),
         )
         style.configure(
             "Section.TLabelframe",
@@ -76,19 +108,19 @@ class FillableApp(tk.Tk):
             "Section.TLabelframe.Label",
             background=self.colors["card"],
             foreground=self.colors["text"],
-            font=("Segoe UI Semibold", 10),
+            font=("Bahnschrift SemiBold", 10),
         )
         style.configure(
             "TLabel",
             background=self.colors["card"],
             foreground=self.colors["text"],
-            font=("Segoe UI", 10),
+            font=("Bahnschrift", 10),
         )
         style.configure(
             "Muted.TLabel",
             background=self.colors["card"],
             foreground=self.colors["muted"],
-            font=("Segoe UI", 9),
+            font=("Bahnschrift", 9),
         )
         style.configure(
             "TEntry",
@@ -97,12 +129,12 @@ class FillableApp(tk.Tk):
             bordercolor=self.colors["line"],
             lightcolor=self.colors["line"],
             darkcolor=self.colors["line"],
-            padding=7,
+            padding=8,
         )
         style.configure(
             "TButton",
-            font=("Segoe UI Semibold", 10),
-            padding=(12, 7),
+            font=("Bahnschrift SemiBold", 10),
+            padding=(12, 8),
             borderwidth=0,
         )
         style.configure(
@@ -119,11 +151,67 @@ class FillableApp(tk.Tk):
             "TCheckbutton",
             background=self.colors["card"],
             foreground=self.colors["text"],
-            font=("Segoe UI", 10),
+            font=("Bahnschrift", 10),
         )
 
-    def _build_ui(self) -> None:
-        root = ttk.Frame(self, style="App.TFrame", padding=(18, 14))
+    def _on_resize(self, event: tk.Event) -> None:
+        if event.widget is self:
+            self._draw_background(event.width, event.height)
+
+    def _draw_background(self, width: int, height: int) -> None:
+        self.bg_canvas.delete("bg")
+        if width < 2 or height < 2:
+            return
+        start = self.colors["bg_start"].lstrip("#")
+        end = self.colors["bg_end"].lstrip("#")
+        r1, g1, b1 = int(start[0:2], 16), int(start[2:4], 16), int(start[4:6], 16)
+        r2, g2, b2 = int(end[0:2], 16), int(end[2:4], 16), int(end[4:6], 16)
+        for i in range(height):
+            ratio = i / max(height - 1, 1)
+            r = int(r1 + (r2 - r1) * ratio)
+            g = int(g1 + (g2 - g1) * ratio)
+            b = int(b1 + (b2 - b1) * ratio)
+            color = f"#{r:02x}{g:02x}{b:02x}"
+            self.bg_canvas.create_line(0, i, width, i, fill=color, tags="bg")
+        self.bg_canvas.create_oval(-120, -120, 260, 260, fill=self.colors["glow_1"], outline="", tags="bg")
+        self.bg_canvas.create_oval(width - 320, 80, width + 80, 480, fill=self.colors["glow_2"], outline="", tags="bg")
+        self.bg_canvas.create_oval(
+            int(width * 0.35),
+            height - 200,
+            int(width * 0.85),
+            height + 200,
+            fill=self.colors["glow_3"],
+            outline="",
+            tags="bg",
+        )
+
+    def _build_onboarding_ui(self) -> None:
+        root = ttk.Frame(self.onboarding_page, style="App.TFrame", padding=(24, 20))
+        root.pack(fill=tk.BOTH, expand=True)
+
+        card = ttk.Frame(root, style="Card.TFrame", padding=20)
+        card.place(relx=0.5, rely=0.45, anchor="center")
+
+        ttk.Label(card, text=f"Welcome to {APP_NAME}", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            card,
+            text="Enter your OpenAI API key to get started. You can change this later in Settings.",
+            style="Subtitle.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 12))
+        ttk.Label(card, text="OpenAI API key").grid(row=2, column=0, sticky="w")
+        ttk.Entry(card, textvariable=self.onboarding_api_key_var, width=62, show="*").grid(
+            row=3, column=0, sticky="ew", pady=(4, 10)
+        )
+        actions = ttk.Frame(card, style="Card.TFrame")
+        actions.grid(row=4, column=0, sticky="e")
+        ttk.Button(actions, text="Continue", style="Primary.TButton", command=self._complete_onboarding).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(actions, text="Skip for now", command=self._skip_onboarding).pack(side=tk.LEFT, padx=(8, 0))
+        card.columnconfigure(0, weight=1)
+
+    def _build_ui(self, parent: ttk.Frame) -> None:
+        root = ttk.Frame(parent, style="App.TFrame", padding=(18, 14))
         root.pack(fill=tk.BOTH, expand=True)
 
         header = ttk.Frame(root, style="App.TFrame")
@@ -131,9 +219,10 @@ class FillableApp(tk.Tk):
         ttk.Label(header, text=APP_NAME, style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="Generate template placeholders and fill documents with Codex.",
+            text="Generate template placeholders and fill documents with FillableDOC.",
             style="Subtitle.TLabel",
         ).pack(anchor="w")
+        ttk.Button(header, text="Settings", command=self.open_settings_window).pack(anchor="e", pady=(6, 0))
 
         content = ttk.Frame(root, style="App.TFrame")
         content.grid(row=1, column=0, sticky="nsew")
@@ -178,21 +267,17 @@ class FillableApp(tk.Tk):
             style="Muted.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(8, 0))
 
-        settings_card = ttk.LabelFrame(left, text="Settings", style="Section.TLabelframe", padding=10)
-        settings_card.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
-        ttk.Label(settings_card, text="Codex command template").grid(row=0, column=0, sticky="w")
-        ttk.Entry(settings_card, textvariable=self.codex_command_var).grid(
+        template_card = ttk.LabelFrame(left, text="Template & Batch", style="Section.TLabelframe", padding=10)
+        template_card.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        ttk.Label(template_card, text="Active template JSON").grid(row=0, column=0, sticky="w")
+        ttk.Entry(template_card, textvariable=self.template_var, state="readonly").grid(
             row=1, column=0, columnspan=2, sticky="ew", pady=(4, 10)
         )
-        ttk.Label(settings_card, text="Active template JSON").grid(row=2, column=0, sticky="w")
-        ttk.Entry(settings_card, textvariable=self.template_var, state="readonly").grid(
-            row=3, column=0, columnspan=2, sticky="ew", pady=(4, 10)
-        )
-        ttk.Label(settings_card, text="Batch data file (.csv/.json, optional)").grid(row=4, column=0, sticky="w")
-        ttk.Entry(settings_card, textvariable=self.batch_data_var).grid(row=5, column=0, sticky="ew", pady=(4, 0))
-        ttk.Button(settings_card, text="Browse", command=self.browse_batch_data).grid(row=5, column=1, padx=(8, 0))
-        settings_card.columnconfigure(0, weight=1)
-        settings_card.rowconfigure(6, weight=1)
+        ttk.Label(template_card, text="Batch data file (.csv/.json, optional)").grid(row=2, column=0, sticky="w")
+        ttk.Entry(template_card, textvariable=self.batch_data_var).grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        ttk.Button(template_card, text="Browse", command=self.browse_batch_data).grid(row=3, column=1, padx=(8, 0))
+        template_card.columnconfigure(0, weight=1)
+        template_card.rowconfigure(4, weight=1)
 
         context_card = ttk.LabelFrame(right, text="Context Files", style="Section.TLabelframe", padding=10)
         context_card.grid(row=0, column=0, sticky="nsew")
@@ -258,6 +343,103 @@ class FillableApp(tk.Tk):
         right.rowconfigure(1, weight=2)
         right.rowconfigure(2, weight=3)
 
+    def _show_initial_page(self) -> None:
+        has_user_key = bool((get_user_openai_key(USER_OPENAI_KEY_TARGET) or "").strip())
+        has_subscription_token = bool((get_secret(SUBSCRIPTION_TOKEN_TARGET) or "").strip())
+        mode = self.ai_mode_var.get().strip().lower()
+        if has_user_key or (mode == "app_subscription" and has_subscription_token):
+            self._show_app_page()
+            return
+        self._show_onboarding_page()
+
+    def _show_onboarding_page(self) -> None:
+        self.app_page.pack_forget()
+        self.onboarding_page.pack(fill=tk.BOTH, expand=True)
+
+    def _show_app_page(self) -> None:
+        self.onboarding_page.pack_forget()
+        self.app_page.pack(fill=tk.BOTH, expand=True)
+
+    def _complete_onboarding(self) -> None:
+        api_key = self.onboarding_api_key_var.get().strip()
+        if not api_key:
+            messagebox.showerror("Missing key", "Enter an OpenAI API key or click 'Skip for now'.")
+            return
+        set_user_openai_key(USER_OPENAI_KEY_TARGET, api_key)
+        self.user_api_key_var.set(api_key)
+        self.ai_mode_var.set("user_key")
+        self._refresh_mode_ui()
+        self._show_app_page()
+
+    def _skip_onboarding(self) -> None:
+        self._show_app_page()
+
+    def open_settings_window(self) -> None:
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.lift()
+            self.settings_window.focus_force()
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Settings")
+        win.geometry("720x430")
+        win.minsize(640, 390)
+        win.configure(bg=self.colors["bg"])
+        self.settings_window = win
+
+        container = ttk.Frame(win, style="App.TFrame", padding=14)
+        container.pack(fill=tk.BOTH, expand=True)
+        card = ttk.LabelFrame(container, text="AI Settings", style="Section.TLabelframe", padding=10)
+        card.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(card, text="AI mode").grid(row=0, column=0, sticky="w")
+        mode_combo = ttk.Combobox(
+            card,
+            textvariable=self.ai_mode_var,
+            state="readonly",
+            values=["user_key", "app_subscription"],
+        )
+        mode_combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        mode_combo.bind("<<ComboboxSelected>>", lambda _: self._refresh_mode_ui())
+
+        ttk.Label(card, text="OpenAI model").grid(row=2, column=0, sticky="w")
+        ttk.Entry(card, textvariable=self.openai_model_var).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+
+        ttk.Label(card, text="OpenAI API base URL").grid(row=4, column=0, sticky="w")
+        ttk.Entry(card, textvariable=self.openai_api_base_var).grid(
+            row=5, column=0, columnspan=2, sticky="ew", pady=(4, 8)
+        )
+
+        ttk.Label(card, text="Your OpenAI API key (secured with Windows DPAPI)").grid(
+            row=6, column=0, sticky="w"
+        )
+        self.user_api_key_entry = ttk.Entry(card, textvariable=self.user_api_key_var, show="*")
+        self.user_api_key_entry.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+
+        ttk.Label(card, text="Subscription backend URL").grid(row=8, column=0, sticky="w")
+        self.subscription_api_base_entry = ttk.Entry(card, textvariable=self.subscription_api_base_var)
+        self.subscription_api_base_entry.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+
+        ttk.Label(card, text="Subscription access token (stored in Credential Manager)").grid(
+            row=10, column=0, sticky="w"
+        )
+        self.subscription_token_entry = ttk.Entry(card, textvariable=self.subscription_token_var, show="*")
+        self.subscription_token_entry.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(4, 10))
+
+        actions = ttk.Frame(card, style="Card.TFrame")
+        actions.grid(row=12, column=0, columnspan=2, sticky="e")
+        ttk.Button(actions, text="Save", style="Primary.TButton", command=self._save_settings).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Close", command=win.destroy).pack(side=tk.LEFT, padx=(8, 0))
+        card.columnconfigure(0, weight=1)
+        self._refresh_mode_ui()
+
+    def _save_settings(self) -> None:
+        try:
+            self._build_codex()
+            messagebox.showinfo("Settings", "Settings saved.")
+        except Exception as exc:
+            messagebox.showerror("Settings", str(exc))
+
     def log(self, message: str) -> None:
         self.log_text.insert(tk.END, message + "\n")
         self.log_text.see(tk.END)
@@ -288,13 +470,46 @@ class FillableApp(tk.Tk):
         for idx in selected:
             self.context_list.delete(idx)
 
+    def _refresh_mode_ui(self) -> None:
+        mode = self.ai_mode_var.get().strip().lower()
+        user_mode = mode != "app_subscription"
+        if not self.user_api_key_entry or not self.subscription_api_base_entry or not self.subscription_token_entry:
+            return
+        if not self.user_api_key_entry.winfo_exists():
+            return
+        if user_mode:
+            self.user_api_key_entry.state(["!disabled"])
+            self.subscription_api_base_entry.state(["disabled"])
+            self.subscription_token_entry.state(["disabled"])
+        else:
+            self.user_api_key_entry.state(["disabled"])
+            self.subscription_api_base_entry.state(["!disabled"])
+            self.subscription_token_entry.state(["!disabled"])
+
     def _build_codex(self) -> CodexCli:
-        cmd = self.codex_command_var.get().strip()
-        if not cmd:
-            raise ValueError("Codex command template is required")
-        if "{prompt}" not in cmd and "{prompt_file}" not in cmd:
-            raise ValueError("Codex command template must include {prompt} or {prompt_file}")
-        self.config_data = AppConfig(codex_command_template=cmd)
+        mode = self.ai_mode_var.get().strip().lower()
+        if mode not in {"user_key", "app_subscription"}:
+            raise ValueError("AI mode must be user_key or app_subscription")
+        model = self.openai_model_var.get().strip()
+        if not model:
+            raise ValueError("OpenAI model is required")
+        openai_api_base = self.openai_api_base_var.get().strip() or "https://api.openai.com/v1"
+        subscription_api_base = self.subscription_api_base_var.get().strip()
+
+        user_key = self.user_api_key_var.get().strip()
+        if user_key:
+            set_user_openai_key(USER_OPENAI_KEY_TARGET, user_key)
+        token = self.subscription_token_var.get().strip()
+        if token:
+            set_secret(SUBSCRIPTION_TOKEN_TARGET, token, username="fillable-subscription")
+
+        self.config_data = AppConfig(
+            ai_mode=mode,
+            openai_model=model,
+            openai_api_base=openai_api_base,
+            subscription_api_base=subscription_api_base,
+            codex_command_template=self.config_data.codex_command_template,
+        )
         save_config(self.config_data)
         return CodexCli(self.config_data)
 
@@ -311,7 +526,12 @@ class FillableApp(tk.Tk):
                 return current_template
 
         if self.source_has_placeholders_var.get():
-            template_path = create_template_from_user_template(source_path, log=self.log)
+            codex = None
+            try:
+                codex = self._build_codex()
+            except Exception as exc:
+                self.log(f"AI unavailable for template import; using local mapping: {exc}")
+            template_path = create_template_from_user_template(source_path, codex=codex, log=self.log)
         else:
             codex = self._build_codex()
             template_path = generate_template(source_path, codex, log=self.log)

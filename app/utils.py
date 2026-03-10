@@ -22,32 +22,32 @@ def load_config() -> AppConfig:
         save_config(config)
         return config
     raw = load_json(config_path)
-    legacy_defaults = {
-        'codex exec --skip-git-repo-check --output-last-message "{prompt}"',
-        'Get-Content -Raw "{prompt_file}" | codex exec --skip-git-repo-check --output-last-message',
-        'Get-Content -Raw "{prompt_file}" | codex exec --skip-git-repo-check --output-schema "{schema_file}" --output-last-message "{output_file}"',
-        'Get-Content -Raw "{prompt_file}" | codex exec --skip-git-repo-check --output-last-message "{output_file}"',
-    }
-    cmd = str(
-        raw.get(
-            "codex_command_template",
-            AppConfig().codex_command_template,
-        )
-    )
-    if cmd in legacy_defaults:
-        cmd = AppConfig().codex_command_template
-        save_json(config_path, {"codex_command_template": cmd})
+    mode = str(raw.get("ai_mode", "user_key")).strip().lower()
+    if mode not in {"user_key", "app_subscription"}:
+        mode = "user_key"
+    model = str(raw.get("openai_model", AppConfig().openai_model)).strip() or AppConfig().openai_model
+    openai_api_base = str(raw.get("openai_api_base", AppConfig().openai_api_base)).strip() or AppConfig().openai_api_base
+    subscription_api_base = str(raw.get("subscription_api_base", "")).strip()
+    cmd = str(raw.get("codex_command_template", AppConfig().codex_command_template))
     return AppConfig(
-        codex_command_template=str(
-            cmd
-        )
+        ai_mode=mode,
+        openai_model=model,
+        openai_api_base=openai_api_base,
+        subscription_api_base=subscription_api_base,
+        codex_command_template=cmd,
     )
 
 
 def save_config(config: AppConfig) -> None:
     save_json(
         AppConfig.default_path(),
-        {"codex_command_template": config.codex_command_template},
+        {
+            "ai_mode": config.ai_mode,
+            "openai_model": config.openai_model,
+            "openai_api_base": config.openai_api_base,
+            "subscription_api_base": config.subscription_api_base,
+            "codex_command_template": config.codex_command_template,
+        },
     )
 
 

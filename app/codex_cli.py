@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from urllib import error, request
 
 from app.models import AppConfig
+from app.secure_store import get_secret, get_user_openai_key
+
+USER_OPENAI_KEY_TARGET = "Fillable.OpenAI.UserKey"
+SUBSCRIPTION_TOKEN_TARGET = "Fillable.Subscription.Token"
 
 
 @dataclass
@@ -25,81 +27,95 @@ class CodexCli:
         self.config = config
 
     def run_json_prompt(self, prompt: str) -> CodexResult:
-        template = self.config.codex_command_template.strip()
-        if "{prompt}" not in template and "{prompt_file}" not in template:
-            raise CodexCliError(
-                "codex_command_template must include '{prompt}' or '{prompt_file}' placeholder"
-            )
-
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            suffix=".txt",
-            delete=False,
-        ) as temp:
-            temp.write(prompt)
-            temp_path = Path(temp.name)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            suffix=".txt",
-            delete=False,
-        ) as out:
-            output_file_path = Path(out.name)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            suffix=".json",
-            delete=False,
-        ) as schema:
-            schema.write('{"type":"object"}')
-            schema_file_path = Path(schema.name)
-
-        command = template
-        command = command.replace("{prompt}", prompt.replace('"', '\\"'))
-        command = command.replace("{prompt_file}", str(temp_path).replace('"', '\\"'))
-        command = command.replace("{output_file}", str(output_file_path).replace('"', '\\"'))
-        command = command.replace("{schema_file}", str(schema_file_path).replace('"', '\\"'))
-        try:
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", command],
-                capture_output=True,
-                text=True,
-                shell=False,
-                check=False,
-            )
-        finally:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-        output_file_text = ""
-        try:
-            output_file_text = output_file_path.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            output_file_text = ""
-        try:
-            output_file_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        try:
-            schema_file_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        output = output_file_text + "\n" + (result.stdout or "") + "\n" + (result.stderr or "")
-        if result.returncode != 0:
-            raise CodexCliError(
-                f"Codex CLI exited with code {result.returncode}. Output:\n{output.strip()}"
-            )
+        mode = (self.config.ai_mode or "user_key").strip().lower()
+        if mode == "app_subscription":
+            output = self._call_subscription_backend(prompt)
+        else:
+            output = self._call_openai(prompt)
 
         parsed = self._extract_json(output)
         if parsed is None:
             raise CodexCliError(
-                "Codex response did not contain valid JSON. "
-                "Adjust your Codex command template or prompt constraints. "
+                "Model response did not contain valid JSON. "
                 f"Raw output:\n{output.strip()[:3000]}"
             )
         return CodexResult(raw_output=output, parsed_json=parsed)
+
+    def _call_openai(self, prompt: str) -> str:
+        api_key = get_user_openai_key(USER_OPENAI_KEY_TARGET)
+        if not api_key:
+            raise CodexCliError(
+                "OpenAI API key is missing. Add your key in Settings or via --set-user-openai-key."
+            )
+
+        base = (self.config.openai_api_base or "https://api.openai.com/v1").rstrip("/")
+        url = f"{base}/chat/completions"
+        payload = {
+            "model": self.config.openai_model or "gpt-4.1-mini",
+            "messages": [
+                {"role": "system", "content": "Respond with a single JSON object only."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        response = self._http_json("POST", url, payload, headers)
+        try:
+            return str(response["choices"][0]["message"]["content"])
+        except Exception as exc:
+            raise CodexCliError(f"Unexpected OpenAI response shape: {response}") from exc
+
+    def _call_subscription_backend(self, prompt: str) -> str:
+        token = get_secret(SUBSCRIPTION_TOKEN_TARGET)
+        if not token:
+            raise CodexCliError(
+                "Subscription token is missing. Sign in/purchase and set token in Settings."
+            )
+        base = (self.config.subscription_api_base or "").strip().rstrip("/")
+        if not base:
+            raise CodexCliError("Subscription backend URL is required in app-subscription mode.")
+        url = f"{base}/v1/openai-proxy"
+        payload = {
+            "model": self.config.openai_model or "gpt-4.1-mini",
+            "prompt": prompt,
+            "response_format": "json_object",
+        }
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        response = self._http_json("POST", url, payload, headers)
+        text = str(response.get("output_text", "")).strip()
+        if text:
+            return text
+        raw = response.get("output")
+        if isinstance(raw, str) and raw.strip():
+            return raw
+        raise CodexCliError(f"Subscription backend did not return output JSON text: {response}")
+
+    @staticmethod
+    def _http_json(method: str, url: str, payload: dict, headers: dict[str, str]) -> dict:
+        body = json.dumps(payload).encode("utf-8")
+        req = request.Request(url, data=body, headers=headers, method=method.upper())
+        try:
+            with request.urlopen(req, timeout=120) as resp:
+                text = resp.read().decode("utf-8", errors="ignore")
+        except error.HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="ignore")
+            raise CodexCliError(f"HTTP {exc.code} from {url}: {details[:1500]}") from exc
+        except error.URLError as exc:
+            raise CodexCliError(f"Network error calling {url}: {exc}") from exc
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return data
+            raise ValueError("Response is not a JSON object.")
+        except Exception as exc:
+            raise CodexCliError(f"Invalid JSON response from {url}: {text[:1500]}") from exc
 
     @staticmethod
     def _extract_json(output: str) -> dict | None:

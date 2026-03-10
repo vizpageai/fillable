@@ -89,6 +89,69 @@ def _template_file_for(source: Path, source_type: str, has_pdf_fields: bool = Fa
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 
 
+def _suggest_pdf_placeholders_with_ai(
+    codex: CodexCli,
+    pdf_fields: list[str],
+    source_text: str,
+    log: Callable[[str], None],
+) -> list[Placeholder]:
+    if not pdf_fields:
+        return []
+
+    # Large IRS-like forms can have hundreds of fields. Chunk to keep prompt sizes stable.
+    chunk_size = 80
+    placeholders: list[Placeholder] = []
+    used_names: set[str] = set()
+    description_by_field: dict[str, str] = {}
+    name_by_field: dict[str, str] = {}
+
+    for start in range(0, len(pdf_fields), chunk_size):
+        chunk = pdf_fields[start: start + chunk_size]
+        prompt = (
+            "You map PDF form field names to friendly placeholder keys. "
+            "Return JSON only with schema "
+            "{\"fields\":[{\"field\":\"exact_original\",\"name\":\"UPPER_SNAKE_CASE\",\"description\":\"...\"}]}. "
+            "Rules: include every input field exactly once, keep 'field' unchanged, "
+            "name must be concise and semantic, avoid generic names when context allows.\n\n"
+            f"Form text sample:\n{truncate_text(source_text, 10000)}\n\n"
+            f"Field names:\n{chunk}"
+        )
+        result = codex.run_json_prompt(prompt)
+        items = result.parsed_json.get("fields", [])
+        for item in items:
+            field = str(item.get("field", "")).strip()
+            if field not in chunk:
+                continue
+            name = sanitize_name(str(item.get("name", "")))
+            if not name:
+                continue
+            if name in used_names:
+                suffix = 2
+                while f"{name}_{suffix}" in used_names:
+                    suffix += 1
+                name = f"{name}_{suffix}"
+            used_names.add(name)
+            name_by_field[field] = name
+            description_by_field[field] = str(item.get("description", "")).strip()
+
+    for field in pdf_fields:
+        name = name_by_field.get(field, sanitize_name(field))
+        if name in {p.name for p in placeholders}:
+            suffix = 2
+            while any(p.name == f"{name}_{suffix}" for p in placeholders):
+                suffix += 1
+            name = f"{name}_{suffix}"
+        placeholders.append(
+            Placeholder(
+                name=name,
+                source_text=field,
+                description=description_by_field.get(field, "PDF form field"),
+            )
+        )
+    log(f"OpenAI mapped {len(placeholders)} PDF fields to friendly placeholders.")
+    return placeholders
+
+
 def _resolve_template_file_path(template_json_path: Path, raw_template_file: str) -> Path:
     template_file = Path(raw_template_file)
     if not template_file.is_absolute():
@@ -139,8 +202,61 @@ def _placeholder_list_from_names(names: list[str], descriptions: dict[str, str])
     ]
 
 
+def _build_ai_template_conversion_prompt(
+    template_text: str,
+    existing_placeholders: list[dict[str, str]],
+    extracted_template_names: list[str],
+) -> str:
+    return (
+        "You convert an edited template document into placeholder metadata. "
+        "Return JSON only with schema "
+        "{\"placeholders\":[{\"name\":\"UPPER_SNAKE_CASE\",\"source_text\":\"...\",\"description\":\"...\"}]}. "
+        "Rules: "
+        "1) If template already contains {{PLACEHOLDER}} tokens, keep those names exactly. "
+        "2) Include all template fields that should be filled. "
+        "3) source_text must be exact text from template, or {{NAME}} when token already exists. "
+        "4) Max 120 placeholders.\n\n"
+        f"Existing JSON placeholders:\n{existing_placeholders}\n\n"
+        f"Detected template token names:\n{extracted_template_names}\n\n"
+        f"Template text:\n{truncate_text(template_text, 20000)}"
+    )
+
+
+def _ai_convert_template_to_placeholders(
+    codex: CodexCli,
+    template_text: str,
+    existing_placeholders: list[Placeholder],
+    extracted_template_names: list[str],
+) -> list[Placeholder]:
+    existing_payload = [
+        {"name": p.name, "source_text": p.source_text, "description": p.description}
+        for p in existing_placeholders
+        if p.name
+    ]
+    prompt = _build_ai_template_conversion_prompt(
+        template_text=template_text,
+        existing_placeholders=existing_payload,
+        extracted_template_names=extracted_template_names,
+    )
+    result = codex.run_json_prompt(prompt)
+    items = result.parsed_json.get("placeholders", [])
+
+    placeholders: list[Placeholder] = []
+    used: set[str] = set()
+    for item in items:
+        name = sanitize_name(str(item.get("name", "")))
+        source_text = str(item.get("source_text", "")).strip()
+        description = str(item.get("description", "")).strip()
+        if not name or name in used:
+            continue
+        used.add(name)
+        placeholders.append(Placeholder(name=name, source_text=source_text, description=description))
+    return placeholders
+
+
 def sync_template_and_json(
     template_json_path: Path,
+    codex: CodexCli | None = None,
     log: Callable[[str], None] = default_logger,
 ) -> Path:
     template_json_path = template_json_path.resolve()
@@ -162,8 +278,62 @@ def sync_template_and_json(
     template_names = _extract_template_placeholder_names(template_file, template.source_type)
 
     if template_mtime > json_mtime:
+        updated = False
+        template_text = ""
+        try:
+            template_text = extract_text(template_file)
+        except Exception:
+            template_text = ""
+
+        ai_placeholders: list[Placeholder] = []
+        if codex is not None and template_text.strip():
+            try:
+                ai_placeholders = _ai_convert_template_to_placeholders(
+                    codex=codex,
+                    template_text=template_text,
+                    existing_placeholders=template.placeholders,
+                    extracted_template_names=template_names,
+                )
+                log("Used OpenAI to convert edited template into placeholder metadata.")
+            except Exception as exc:
+                log(f"AI template conversion failed; falling back to local sync: {exc}")
+
+        ai_desc = {p.name: p.description for p in ai_placeholders if p.name}
         if template_names:
+            merged_descriptions = {**json_descriptions, **ai_desc}
+            template.placeholders = _placeholder_list_from_names(template_names, merged_descriptions)
+            updated = True
+        elif ai_placeholders:
+            # If edited template removed tokens, try to insert tokens from AI source_text snippets.
+            replacements = {}
+            used_names: set[str] = set()
+            for p in ai_placeholders:
+                name = sanitize_name(p.name)
+                if not name or name in used_names:
+                    continue
+                used_names.add(name)
+                src = str(p.source_text or "").strip()
+                if not src or src == "{{" + name + "}}":
+                    continue
+                replacements[src] = "{{" + name + "}}"
+            if replacements:
+                if template.source_type == "docx":
+                    replace_in_docx(template_file, template_file, replacements)
+                elif template.source_type == "pptx":
+                    replace_in_pptx(template_file, template_file, replacements)
+                else:
+                    replace_in_text(template_file, template_file, replacements)
+                template_names = _extract_template_placeholder_names(template_file, template.source_type)
+            if template_names:
+                merged_descriptions = {**json_descriptions, **ai_desc}
+                template.placeholders = _placeholder_list_from_names(template_names, merged_descriptions)
+                updated = True
+
+        if not updated and template_names:
             template.placeholders = _placeholder_list_from_names(template_names, json_descriptions)
+            updated = True
+
+        if updated:
             save_json(template_json_path, template.to_dict())
             log(f"Synchronized JSON from template changes: {template_json_path}")
         return template_json_path
@@ -202,6 +372,7 @@ def sync_template_and_json(
 def create_template_from_user_template(
     template_file_path: Path,
     source_file_path: Path | None = None,
+    codex: CodexCli | None = None,
     log: Callable[[str], None] = default_logger,
 ) -> Path:
     template_file_path = template_file_path.resolve()
@@ -223,6 +394,19 @@ def create_template_from_user_template(
                 )
                 for name in names
             ]
+        elif codex is not None:
+            try:
+                pdf_text = extract_text(template_file_path)
+            except Exception:
+                pdf_text = ""
+            try:
+                placeholders = _suggest_pdf_placeholders_with_ai(codex, pdf_fields, pdf_text, log)
+            except Exception as exc:
+                log(f"OpenAI PDF field mapping failed; falling back to raw field names: {exc}")
+                placeholders = [
+                    Placeholder(name=sanitize_name(name), source_text=name, description="PDF form field")
+                    for name in pdf_fields
+                ]
     else:
         text = extract_text(template_file_path)
         names = sorted({sanitize_name(m.group(1)) for m in PLACEHOLDER_PATTERN.finditer(text)})
@@ -303,10 +487,7 @@ def generate_template(
         pptx_blanks = collect_pptx_blanks(source_path)
 
     if pdf_fields:
-        placeholders = [
-            Placeholder(name=sanitize_name(name), source_text=name, description="PDF form field")
-            for name in pdf_fields
-        ]
+        placeholders = _suggest_pdf_placeholders_with_ai(codex, pdf_fields, text, log)
         log(f"Found {len(placeholders)} PDF form fields.")
     elif docx_blanks or pptx_blanks:
         used_blank_mode = True
@@ -359,7 +540,7 @@ def generate_template(
             )
             log(
                 f"Found {len(blanks)} blank regions "
-                f"({len(blank_placeholder_map)} resolved by labels). Calling Codex for remaining..."
+                f"({len(blank_placeholder_map)} resolved by labels). Calling AI for remaining..."
             )
             result = codex.run_json_prompt(prompt)
             items = result.parsed_json.get("blank_to_placeholder", [])
@@ -412,7 +593,7 @@ def generate_template(
             "Input document text:\n"
             f"{truncate_text(text)}"
         )
-        log("Calling Codex CLI to generate placeholder plan...")
+        log("Calling AI to generate placeholder plan...")
         result = codex.run_json_prompt(prompt)
         items = result.parsed_json.get("placeholders", [])
         for item in items:
@@ -427,7 +608,7 @@ def generate_template(
                     description=str(item.get("description", "")).strip(),
                 )
             )
-        log(f"Codex proposed {len(placeholders)} placeholders.")
+        log(f"AI proposed {len(placeholders)} placeholders.")
 
     template_file = _template_file_for(source_path, source_type, has_pdf_fields=bool(pdf_fields))
     mapping = {
@@ -491,7 +672,7 @@ def fill_template(
     log: Callable[[str], None] = default_logger,
 ) -> Path:
     template_json_path = template_json_path.resolve()
-    sync_template_and_json(template_json_path, log=log)
+    sync_template_and_json(template_json_path, codex=codex, log=log)
     data = load_json(template_json_path)
     template = FillableTemplate.from_dict(data)
 
@@ -515,7 +696,7 @@ def fill_template(
         f"Template metadata:\n{data}\n\n"
         f"Additional context:\n{'\n\n'.join(context_chunks) or 'None'}"
     )
-    log("Calling Codex CLI to generate filled values...")
+    log("Calling AI to generate filled values...")
     result = codex.run_json_prompt(prompt)
     values_raw = result.parsed_json.get("values", {})
     values = {sanitize_name(str(k)): str(v) for k, v in values_raw.items()}
@@ -607,7 +788,7 @@ def _match_batch_columns_with_codex(
         f"Available columns:\n{columns}\n\n"
         f"Sample rows:\n{sample_rows}"
     )
-    log("Calling Codex CLI to map batch data columns to template placeholders...")
+    log("Calling AI to map batch data columns to template placeholders...")
     result = codex.run_json_prompt(prompt)
     items = result.parsed_json.get("column_to_placeholder", [])
     used_columns = set(mapping.values())
@@ -635,8 +816,18 @@ def _write_filled_output(template: FillableTemplate, values: dict[str, str], out
         replace_in_pptx(template_file, output_path, replacements)
     elif source_type == "pdf":
         if template.pdf_form_fields:
-            field_values = {}
+            # Primary mapping: placeholder.name -> placeholder.source_text(field name)
+            field_values: dict[str, str] = {}
+            for p in template.placeholders:
+                field_name = str(p.source_text or "").strip()
+                if not field_name:
+                    continue
+                field_values[field_name] = values.get(p.name, values.get(sanitize_name(p.name), ""))
+
+            # Backward compatibility for old templates that only used sanitized field names.
             for field_name in template.pdf_form_fields:
+                if field_name in field_values:
+                    continue
                 key = sanitize_name(field_name)
                 field_values[field_name] = values.get(key, "")
             fill_pdf_form(template_file, output_path, field_values)
@@ -701,7 +892,7 @@ def fill_template_multiple(
     log: Callable[[str], None] = default_logger,
 ) -> list[Path]:
     template_json_path = template_json_path.resolve()
-    sync_template_and_json(template_json_path, log=log)
+    sync_template_and_json(template_json_path, codex=codex, log=log)
     template_data = load_json(template_json_path)
     template = FillableTemplate.from_dict(template_data)
     records = _load_batch_records(records_path)

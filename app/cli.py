@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from app.codex_cli import CodexCli
+from app.codex_cli import SUBSCRIPTION_TOKEN_TARGET, USER_OPENAI_KEY_TARGET, CodexCli
 from app.context_menu import install_context_menu, uninstall_context_menu
 from app.template_engine import (
     create_template_from_user_template,
@@ -12,6 +12,8 @@ from app.template_engine import (
     generate_template,
 )
 from app.utils import load_config
+from app.models import AppConfig
+from app.secure_store import delete_secret, delete_user_openai_key, set_secret, set_user_openai_key
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,6 +40,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--uninstall-context-menu", action="store_true")
     parser.add_argument("--context-menu-exe", type=str, default="")
     parser.add_argument("--no-prompt-in-context-menu", action="store_true")
+    parser.add_argument("--set-ai-mode", choices=["user_key", "app_subscription"])
+    parser.add_argument("--set-openai-model", type=str)
+    parser.add_argument("--set-openai-api-base", type=str)
+    parser.add_argument("--set-subscription-api-base", type=str)
+    parser.add_argument("--set-user-openai-key", type=str)
+    parser.add_argument("--clear-user-openai-key", action="store_true")
+    parser.add_argument("--set-subscription-token", type=str)
+    parser.add_argument("--clear-subscription-token", action="store_true")
     return parser
 
 
@@ -64,6 +74,43 @@ def _resolve_fill_template_target(path: Path) -> Path:
 
 def run_cli(args: argparse.Namespace) -> int:
     config = load_config()
+    config_changed = False
+
+    if args.set_ai_mode:
+        config.ai_mode = args.set_ai_mode
+        config_changed = True
+    if args.set_openai_model:
+        config.openai_model = args.set_openai_model.strip()
+        config_changed = True
+    if args.set_openai_api_base:
+        config.openai_api_base = args.set_openai_api_base.strip()
+        config_changed = True
+    if args.set_subscription_api_base is not None:
+        config.subscription_api_base = args.set_subscription_api_base.strip()
+        config_changed = True
+    if config_changed:
+        from app.utils import save_config
+
+        save_config(config)
+        print("Saved AI configuration.")
+
+    if args.set_user_openai_key is not None:
+        set_user_openai_key(USER_OPENAI_KEY_TARGET, args.set_user_openai_key.strip())
+        print("Saved user OpenAI API key using Windows DPAPI.")
+    if args.clear_user_openai_key:
+        delete_user_openai_key(USER_OPENAI_KEY_TARGET)
+        print("Cleared user OpenAI API key from Windows DPAPI storage.")
+    if args.set_subscription_token is not None:
+        set_secret(
+            SUBSCRIPTION_TOKEN_TARGET,
+            args.set_subscription_token.strip(),
+            username="fillable-subscription",
+        )
+        print("Saved subscription token in Windows Credential Manager.")
+    if args.clear_subscription_token:
+        delete_secret(SUBSCRIPTION_TOKEN_TARGET)
+        print("Cleared subscription token from Windows Credential Manager.")
+
     if args.install_context_menu:
         install_context_menu(
             exe_override=(args.context_menu_exe.strip() or None),
@@ -78,7 +125,19 @@ def run_cli(args: argparse.Namespace) -> int:
         return 0
 
     if args.print_config:
-        print(f"codex_command_template={config.codex_command_template}")
+        sanitized = AppConfig(
+            ai_mode=config.ai_mode,
+            openai_model=config.openai_model,
+            openai_api_base=config.openai_api_base,
+            subscription_api_base=config.subscription_api_base,
+            codex_command_template=config.codex_command_template,
+        )
+        print(f"ai_mode={sanitized.ai_mode}")
+        print(f"openai_model={sanitized.openai_model}")
+        print(f"openai_api_base={sanitized.openai_api_base}")
+        print(f"subscription_api_base={sanitized.subscription_api_base}")
+        print("user_key_in_dpapi_store=(hidden)")
+        print("subscription_token_in_credential_manager=(hidden)")
         return 0
 
     def logger(message: str) -> None:
@@ -91,7 +150,12 @@ def run_cli(args: argparse.Namespace) -> int:
         return 0
 
     if args.import_template_file:
-        output = create_template_from_user_template(args.import_template_file, log=logger)
+        codex = None
+        try:
+            codex = CodexCli(config)
+        except Exception:
+            codex = None
+        output = create_template_from_user_template(args.import_template_file, codex=codex, log=logger)
         print(output)
         return 0
 
