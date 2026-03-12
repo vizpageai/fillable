@@ -1,5 +1,6 @@
 param(
-    [string]$IsccPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+    [string]$IsccPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+    [switch]$NoStoreCapture
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,7 +24,12 @@ if (-not (Test-Path $IsccPath)) {
 }
 
 Write-Host "Building installer with Inno Setup..."
-& $IsccPath $iss
+$isccArgs = @()
+if (-not $NoStoreCapture) {
+    $isccArgs += "/DStoreCapture=1"
+}
+$isccArgs += $iss
+& $IsccPath @isccArgs
 
 $outDir = Join-Path $root "dist\installer"
 Write-Host "Done. Installer output folder: $outDir"
