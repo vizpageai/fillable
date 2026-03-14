@@ -170,19 +170,13 @@ def delete_secret(target_name: str) -> None:
 
 
 def set_user_openai_key(target_name: str, secret: str) -> None:
-    payload = (secret or "").encode("utf-8")
-    encrypted = _dpapi_protect(payload)
-    _dpapi_secret_path(target_name).write_bytes(encrypted)
+    _set_dpapi_secret(target_name, secret)
 
 
 def get_user_openai_key(target_name: str) -> str | None:
-    path = _dpapi_secret_path(target_name)
-    if path.exists():
-        encrypted = path.read_bytes()
-        decrypted = _dpapi_unprotect(encrypted)
-        if decrypted is None:
-            return None
-        return decrypted.decode("utf-8", errors="ignore")
+    secret = _get_dpapi_secret(target_name)
+    if secret is not None:
+        return secret
     # Fallback for older installs: migrate from Credential Manager.
     legacy = get_secret(target_name)
     if legacy is None:
@@ -196,7 +190,40 @@ def get_user_openai_key(target_name: str) -> str | None:
 
 
 def delete_user_openai_key(target_name: str) -> None:
+    _delete_dpapi_secret(target_name)
+    delete_secret(target_name)
+
+
+def _set_dpapi_secret(target_name: str, secret: str) -> None:
+    payload = (secret or "").encode("utf-8")
+    encrypted = _dpapi_protect(payload)
+    _dpapi_secret_path(target_name).write_bytes(encrypted)
+
+
+def _get_dpapi_secret(target_name: str) -> str | None:
+    path = _dpapi_secret_path(target_name)
+    if not path.exists():
+        return None
+    encrypted = path.read_bytes()
+    decrypted = _dpapi_unprotect(encrypted)
+    if decrypted is None:
+        return None
+    return decrypted.decode("utf-8", errors="ignore")
+
+
+def _delete_dpapi_secret(target_name: str) -> None:
     path = _dpapi_secret_path(target_name)
     if path.exists():
         path.unlink(missing_ok=True)
-    delete_secret(target_name)
+
+
+def set_firebase_refresh_token(target_name: str, secret: str) -> None:
+    _set_dpapi_secret(target_name, secret)
+
+
+def get_firebase_refresh_token(target_name: str) -> str | None:
+    return _get_dpapi_secret(target_name)
+
+
+def delete_firebase_refresh_token(target_name: str) -> None:
+    _delete_dpapi_secret(target_name)

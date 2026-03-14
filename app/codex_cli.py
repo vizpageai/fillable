@@ -5,11 +5,14 @@ import re
 from dataclasses import dataclass
 from urllib import error, request
 
+from app.backend_auth import BackendAuthError, refresh as backend_refresh
+from app.firebase_auth import is_token_expired, jwt_expiry_epoch
 from app.models import AppConfig
-from app.secure_store import get_secret, get_user_openai_key
+from app.secure_store import get_firebase_refresh_token, get_user_openai_key
+from app.utils import save_config
 
 USER_OPENAI_KEY_TARGET = "Fillable.OpenAI.UserKey"
-SUBSCRIPTION_TOKEN_TARGET = "Fillable.Subscription.Token"
+FIREBASE_REFRESH_TOKEN_TARGET = "Fillable.Firebase.RefreshToken"
 
 
 @dataclass
@@ -27,12 +30,10 @@ class CodexCli:
         self.config = config
 
     def run_json_prompt(self, prompt: str) -> CodexResult:
-        mode = (self.config.ai_mode or "user_key").strip().lower()
-        if mode == "app_subscription":
-            output = self._call_subscription_backend(prompt)
+        if self.config.credit_balance > 0 and (self.config.firebase_id_token or "").strip():
+            output = self._call_backend(prompt)
         else:
             output = self._call_openai(prompt)
-
         parsed = self._extract_json(output)
         if parsed is None:
             raise CodexCliError(
@@ -48,7 +49,7 @@ class CodexCli:
                 "OpenAI API key is missing. Add your key in Settings or via --set-user-openai-key."
             )
 
-        base = (self.config.openai_api_base or "https://api.openai.com/v1").rstrip("/")
+        base = "https://api.openai.com/v1"
         url = f"{base}/chat/completions"
         payload = {
             "model": self.config.openai_model or "gpt-4.1-mini",
@@ -69,33 +70,73 @@ class CodexCli:
         except Exception as exc:
             raise CodexCliError(f"Unexpected OpenAI response shape: {response}") from exc
 
-    def _call_subscription_backend(self, prompt: str) -> str:
-        token = get_secret(SUBSCRIPTION_TOKEN_TARGET)
-        if not token:
-            raise CodexCliError(
-                "Subscription token is missing. Sign in/purchase and set token in Settings."
-            )
-        base = (self.config.subscription_api_base or "").strip().rstrip("/")
+    def _call_backend(self, prompt: str) -> str:
+        base = (self.config.backend_api_base or "").strip().rstrip("/")
         if not base:
-            raise CodexCliError("Subscription backend URL is required in app-subscription mode.")
+            raise CodexCliError("Backend URL is required for credit mode.")
+        token = self._get_firebase_bearer()
+        if not token:
+            raise CodexCliError("Firebase login is required for credit mode.")
         url = f"{base}/v1/openai-proxy"
         payload = {
-            "model": self.config.openai_model or "gpt-4.1-mini",
-            "prompt": prompt,
-            "response_format": "json_object",
+            "payload": {
+                "model": self.config.openai_model or "gpt-4.1-mini",
+                "messages": [
+                    {"role": "system", "content": "Respond with a single JSON object only."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+            },
         }
         headers = {
-            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
         }
         response = self._http_json("POST", url, payload, headers)
-        text = str(response.get("output_text", "")).strip()
-        if text:
-            return text
-        raw = response.get("output")
-        if isinstance(raw, str) and raw.strip():
-            return raw
-        raise CodexCliError(f"Subscription backend did not return output JSON text: {response}")
+        try:
+            remaining = float(response.get("credits_remaining", 0.0) or 0.0)
+            self.config.credit_balance = remaining
+            save_config(self.config)
+        except Exception:
+            pass
+        try:
+            return str(response["choices"][0]["message"]["content"])
+        except Exception as exc:
+            raise CodexCliError(f"Unexpected backend response shape: {response}") from exc
+
+    def _get_firebase_bearer(self) -> str:
+        token = (self.config.firebase_id_token or "").strip()
+        exp_epoch = int(self.config.firebase_token_expiry_utc or 0)
+        if token and exp_epoch == 0:
+            exp_epoch = jwt_expiry_epoch(token) or 0
+        if token and not is_token_expired(exp_epoch):
+            return token
+        refresh = (get_firebase_refresh_token(FIREBASE_REFRESH_TOKEN_TARGET) or "").strip()
+        base = (self.config.backend_api_base or "").strip()
+        if not refresh or not base:
+            return token
+        try:
+            refreshed = backend_refresh(base, refresh)
+        except BackendAuthError as exc:
+            raise CodexCliError(str(exc)) from exc
+        token = str(refreshed.get("id_token", "") or refreshed.get("idToken", "")).strip()
+        refresh = str(refreshed.get("refresh_token", "") or refreshed.get("refreshToken", "")).strip()
+        expires_in = int(refreshed.get("expires_in", 0) or refreshed.get("expiresIn", 0) or 0)
+        if not token:
+            return ""
+        if expires_in:
+            exp_epoch = int(__import__("time").time()) + expires_in
+        else:
+            exp_epoch = jwt_expiry_epoch(token) or 0
+        self.config.firebase_id_token = token
+        if refresh:
+            from app.secure_store import set_firebase_refresh_token
+
+            set_firebase_refresh_token(FIREBASE_REFRESH_TOKEN_TARGET, refresh)
+        self.config.firebase_token_expiry_utc = exp_epoch
+        save_config(self.config)
+        return token
 
     @staticmethod
     def _http_json(method: str, url: str, payload: dict, headers: dict[str, str]) -> dict:

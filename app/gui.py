@@ -1,18 +1,26 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from urllib import error, request
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+import urllib.parse
 
-from app.codex_cli import (
-    SUBSCRIPTION_TOKEN_TARGET,
-    USER_OPENAI_KEY_TARGET,
-    CodexCli,
-    CodexCliError,
+from app.backend_auth import BackendAuthError, login as backend_login, refresh as backend_refresh, register as backend_register
+from app.codex_cli import USER_OPENAI_KEY_TARGET, CodexCli, CodexCliError
+from app.firebase_auth import is_token_expired, jwt_expiry_epoch
+from app.secure_store import (
+    delete_firebase_refresh_token,
+    get_firebase_refresh_token,
+    get_user_openai_key,
+    set_firebase_refresh_token,
+    set_user_openai_key,
 )
-from app.secure_store import get_secret, get_user_openai_key, set_secret, set_user_openai_key
 from app.template_engine import (
     create_template_from_user_template,
     fill_template,
@@ -21,6 +29,16 @@ from app.template_engine import (
 )
 from app.utils import AppConfig, load_config, load_json, save_config
 from app.version import APP_NAME, APP_VERSION
+
+FIREBASE_CONFIG = {
+    "apiKey": "AIzaSyBZzNCcFybRrIxQilLrWfopI22LxGe7d1g",
+    "authDomain": "courai.firebaseapp.com",
+    "projectId": "courai",
+    "storageBucket": "courai.firebasestorage.app",
+    "messagingSenderId": "100651010107",
+    "appId": "1:100651010107:web:5e4c183924ee3846f0341e",
+    "measurementId": "G-DDXRVGRX5Y",
+}
 
 
 class FillableApp(tk.Tk):
@@ -35,17 +53,27 @@ class FillableApp(tk.Tk):
         self.template_var = tk.StringVar(value=initial_template or "")
         self.source_has_placeholders_var = tk.BooleanVar(value=False)
         self.batch_data_var = tk.StringVar(value="")
-        self.ai_mode_var = tk.StringVar(value=self.config_data.ai_mode)
         self.openai_model_var = tk.StringVar(value=self.config_data.openai_model)
-        self.openai_api_base_var = tk.StringVar(value=self.config_data.openai_api_base)
-        self.subscription_api_base_var = tk.StringVar(value=self.config_data.subscription_api_base)
+        self.backend_api_base_var = tk.StringVar(value=self.config_data.backend_api_base)
+        self.firebase_email_var = tk.StringVar(value=self.config_data.firebase_email)
+        self.firebase_uid_var = tk.StringVar(value=self.config_data.firebase_uid)
+        self.firebase_id_token_var = tk.StringVar(value=self.config_data.firebase_id_token)
+        self.firebase_password_var = tk.StringVar(value="")
         self.user_api_key_var = tk.StringVar(value=get_user_openai_key(USER_OPENAI_KEY_TARGET) or "")
-        self.subscription_token_var = tk.StringVar(value=get_secret(SUBSCRIPTION_TOKEN_TARGET) or "")
+        self.account_status_var = tk.StringVar(value=self._format_account_status())
+        self.subscription_status_var = tk.StringVar(value="Credits: --")
+        self.subscription_hint_var = tk.StringVar(value="")
         self.onboarding_api_key_var = tk.StringVar(value="")
-        self.settings_window: tk.Toplevel | None = None
         self.user_api_key_entry = None
-        self.subscription_api_base_entry = None
-        self.subscription_token_entry = None
+        self.firebase_email_entry = None
+        self.firebase_password_entry = None
+        self.account_action_frame = None
+        self.auth_window: tk.Toplevel | None = None
+        self.auth_button = None
+        self.upgrade_button = None
+        self.credit_poll_after_upgrade = 0
+        self.oauth_server: HTTPServer | None = None
+        self.oauth_thread: threading.Thread | None = None
 
         self._init_styles()
         self._set_window_icon()
@@ -59,7 +87,7 @@ class FillableApp(tk.Tk):
         self.app_page = ttk.Frame(self.page_container, style="App.TFrame")
         self._build_onboarding_ui()
         self._build_ui(self.app_page)
-        self._refresh_mode_ui()
+        self._refresh_subscription_ui()
         self._show_initial_page()
 
     def _init_styles(self) -> None:
@@ -212,7 +240,7 @@ class FillableApp(tk.Tk):
         ttk.Label(card, text=f"Welcome to {APP_NAME}", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             card,
-            text="Enter your OpenAI API key to get started. You can change this later in Settings.",
+            text="Enter your OpenAI API key to get started. You can change it later on the main screen.",
             style="Subtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 12))
         ttk.Label(card, text="OpenAI API key").grid(row=2, column=0, sticky="w")
@@ -239,7 +267,18 @@ class FillableApp(tk.Tk):
             text="Generate template placeholders and fill documents with FillableDOC.",
             style="Subtitle.TLabel",
         ).pack(anchor="w")
-        ttk.Button(header, text="Settings", command=self.open_settings_window).pack(anchor="e", pady=(6, 0))
+        header_actions = ttk.Frame(header, style="App.TFrame")
+        header_actions.pack(anchor="e", pady=(6, 0))
+        self.auth_button = ttk.Button(
+            header_actions,
+            text=self._auth_button_label(),
+            command=self._on_auth_button,
+        )
+        self.auth_button.pack(side=tk.LEFT, padx=(0, 8))
+        self.upgrade_button = ttk.Button(header_actions, text="Buy credits", command=self._upgrade)
+        self.upgrade_button.pack(side=tk.LEFT, padx=(0, 8))
+        # Settings removed per requirements; model selection is on the main page.
+        ttk.Label(header, textvariable=self.subscription_status_var, style="Muted.TLabel").pack(anchor="e", pady=(4, 0))
 
         content = ttk.Frame(root, style="App.TFrame")
         content.grid(row=1, column=0, sticky="nsew")
@@ -255,8 +294,29 @@ class FillableApp(tk.Tk):
         content.columnconfigure(1, weight=2)
         content.rowconfigure(0, weight=1)
 
+        ai_card = ttk.LabelFrame(left, text="AI Settings", style="Section.TLabelframe", padding=10)
+        ai_card.grid(row=0, column=0, sticky="ew")
+        ttk.Label(ai_card, text="Model").grid(row=0, column=0, sticky="w")
+        model_combo = ttk.Combobox(
+            ai_card,
+            textvariable=self.openai_model_var,
+            state="readonly",
+            values=["gpt-5.4", "gpt-5.3-codex", "gpt-5.2", "gpt-4o"],
+        )
+        model_combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        self.free_key_label = ttk.Label(ai_card, text="OpenAI API key (free plan)")
+        self.free_key_label.grid(row=2, column=0, sticky="w")
+        self.user_api_key_entry = ttk.Entry(ai_card, textvariable=self.user_api_key_var, show="*")
+        self.user_api_key_entry.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        self.save_key_button = ttk.Button(ai_card, text="Save key", command=self._save_openai_key)
+        self.save_key_button.grid(row=4, column=0, sticky="w")
+        ttk.Label(ai_card, textvariable=self.subscription_hint_var, style="Muted.TLabel").grid(
+            row=5, column=0, columnspan=2, sticky="w", pady=(6, 0)
+        )
+        ai_card.columnconfigure(0, weight=1)
+
         source_card = ttk.LabelFrame(left, text="Template Source", style="Section.TLabelframe", padding=10)
-        source_card.grid(row=0, column=0, sticky="ew")
+        source_card.grid(row=1, column=0, sticky="ew")
         ttk.Label(source_card, text="Source file (.docx/.pptx/.pdf)").grid(row=0, column=0, sticky="w")
         ttk.Entry(source_card, textvariable=self.source_var).grid(row=1, column=0, sticky="ew", pady=(4, 0))
         ttk.Button(source_card, text="Browse", command=self.browse_source).grid(row=1, column=1, padx=(8, 0))
@@ -268,7 +328,7 @@ class FillableApp(tk.Tk):
         source_card.columnconfigure(0, weight=1)
 
         run_card = ttk.LabelFrame(left, text="Run Actions", style="Section.TLabelframe", padding=10)
-        run_card.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        run_card.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         actions = ttk.Frame(run_card, style="Card.TFrame")
         actions.grid(row=0, column=0, sticky="w")
         ttk.Button(
@@ -285,7 +345,7 @@ class FillableApp(tk.Tk):
         ).grid(row=1, column=0, sticky="w", pady=(8, 0))
 
         template_card = ttk.LabelFrame(left, text="Template & Batch", style="Section.TLabelframe", padding=10)
-        template_card.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        template_card.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
         ttk.Label(template_card, text="Active template JSON").grid(row=0, column=0, sticky="w")
         ttk.Entry(template_card, textvariable=self.template_var, state="readonly").grid(
             row=1, column=0, columnspan=2, sticky="ew", pady=(4, 10)
@@ -354,7 +414,7 @@ class FillableApp(tk.Tk):
         logs_card.rowconfigure(0, weight=1)
 
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(2, weight=1)
+        left.rowconfigure(3, weight=1)
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=2)
         right.rowconfigure(1, weight=2)
@@ -362,9 +422,7 @@ class FillableApp(tk.Tk):
 
     def _show_initial_page(self) -> None:
         has_user_key = bool((get_user_openai_key(USER_OPENAI_KEY_TARGET) or "").strip())
-        has_subscription_token = bool((get_secret(SUBSCRIPTION_TOKEN_TARGET) or "").strip())
-        mode = self.ai_mode_var.get().strip().lower()
-        if has_user_key or (mode == "app_subscription" and has_subscription_token):
+        if has_user_key:
             self._show_app_page()
             return
         self._show_onboarding_page()
@@ -384,78 +442,10 @@ class FillableApp(tk.Tk):
             return
         set_user_openai_key(USER_OPENAI_KEY_TARGET, api_key)
         self.user_api_key_var.set(api_key)
-        self.ai_mode_var.set("user_key")
-        self._refresh_mode_ui()
         self._show_app_page()
 
     def _skip_onboarding(self) -> None:
         self._show_app_page()
-
-    def open_settings_window(self) -> None:
-        if self.settings_window is not None and self.settings_window.winfo_exists():
-            self.settings_window.lift()
-            self.settings_window.focus_force()
-            return
-
-        win = tk.Toplevel(self)
-        win.title("Settings")
-        win.geometry("720x430")
-        win.minsize(640, 390)
-        win.configure(bg=self.colors["bg"])
-        self.settings_window = win
-
-        container = ttk.Frame(win, style="App.TFrame", padding=14)
-        container.pack(fill=tk.BOTH, expand=True)
-        card = ttk.LabelFrame(container, text="AI Settings", style="Section.TLabelframe", padding=10)
-        card.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(card, text="AI mode").grid(row=0, column=0, sticky="w")
-        mode_combo = ttk.Combobox(
-            card,
-            textvariable=self.ai_mode_var,
-            state="readonly",
-            values=["user_key", "app_subscription"],
-        )
-        mode_combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 8))
-        mode_combo.bind("<<ComboboxSelected>>", lambda _: self._refresh_mode_ui())
-
-        ttk.Label(card, text="OpenAI model").grid(row=2, column=0, sticky="w")
-        ttk.Entry(card, textvariable=self.openai_model_var).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 8))
-
-        ttk.Label(card, text="OpenAI API base URL").grid(row=4, column=0, sticky="w")
-        ttk.Entry(card, textvariable=self.openai_api_base_var).grid(
-            row=5, column=0, columnspan=2, sticky="ew", pady=(4, 8)
-        )
-
-        ttk.Label(card, text="Your OpenAI API key (secured with Windows DPAPI)").grid(
-            row=6, column=0, sticky="w"
-        )
-        self.user_api_key_entry = ttk.Entry(card, textvariable=self.user_api_key_var, show="*")
-        self.user_api_key_entry.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 8))
-
-        ttk.Label(card, text="Subscription backend URL").grid(row=8, column=0, sticky="w")
-        self.subscription_api_base_entry = ttk.Entry(card, textvariable=self.subscription_api_base_var)
-        self.subscription_api_base_entry.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(4, 8))
-
-        ttk.Label(card, text="Subscription access token (stored in Credential Manager)").grid(
-            row=10, column=0, sticky="w"
-        )
-        self.subscription_token_entry = ttk.Entry(card, textvariable=self.subscription_token_var, show="*")
-        self.subscription_token_entry.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(4, 10))
-
-        actions = ttk.Frame(card, style="Card.TFrame")
-        actions.grid(row=12, column=0, columnspan=2, sticky="e")
-        ttk.Button(actions, text="Save", style="Primary.TButton", command=self._save_settings).pack(side=tk.LEFT)
-        ttk.Button(actions, text="Close", command=win.destroy).pack(side=tk.LEFT, padx=(8, 0))
-        card.columnconfigure(0, weight=1)
-        self._refresh_mode_ui()
-
-    def _save_settings(self) -> None:
-        try:
-            self._build_codex()
-            messagebox.showinfo("Settings", "Settings saved.")
-        except Exception as exc:
-            messagebox.showerror("Settings", str(exc))
 
     def log(self, message: str) -> None:
         self.log_text.insert(tk.END, message + "\n")
@@ -487,48 +477,478 @@ class FillableApp(tk.Tk):
         for idx in selected:
             self.context_list.delete(idx)
 
-    def _refresh_mode_ui(self) -> None:
-        mode = self.ai_mode_var.get().strip().lower()
-        user_mode = mode != "app_subscription"
-        if not self.user_api_key_entry or not self.subscription_api_base_entry or not self.subscription_token_entry:
-            return
-        if not self.user_api_key_entry.winfo_exists():
-            return
-        if user_mode:
-            self.user_api_key_entry.state(["!disabled"])
-            self.subscription_api_base_entry.state(["disabled"])
-            self.subscription_token_entry.state(["disabled"])
-        else:
-            self.user_api_key_entry.state(["disabled"])
-            self.subscription_api_base_entry.state(["!disabled"])
-            self.subscription_token_entry.state(["!disabled"])
-
     def _build_codex(self) -> CodexCli:
-        mode = self.ai_mode_var.get().strip().lower()
-        if mode not in {"user_key", "app_subscription"}:
-            raise ValueError("AI mode must be user_key or app_subscription")
         model = self.openai_model_var.get().strip()
+        if model not in {"gpt-5.4", "gpt-5.3-codex", "gpt-5.2", "gpt-4o"}:
+            raise ValueError("Model must be one of: gpt-5.4, gpt-5.3-codex, gpt-5.2, gpt-4o.")
         if not model:
             raise ValueError("OpenAI model is required")
-        openai_api_base = self.openai_api_base_var.get().strip() or "https://api.openai.com/v1"
-        subscription_api_base = self.subscription_api_base_var.get().strip()
+        backend_api_base = self.backend_api_base_var.get().strip() or self.config_data.backend_api_base
+        firebase_id_token = self.firebase_id_token_var.get().strip()
+        use_subscription = bool(self.config_data.credit_balance > 0 and firebase_id_token)
 
         user_key = self.user_api_key_var.get().strip()
-        if user_key:
+        if use_subscription:
+            if not backend_api_base:
+                raise ValueError("Backend URL is required for credit mode.")
+            if not firebase_id_token:
+                raise ValueError("Firebase login or ID token is required for credit mode.")
+        else:
+            if not user_key:
+                raise ValueError("OpenAI API key is required for free mode.")
             set_user_openai_key(USER_OPENAI_KEY_TARGET, user_key)
-        token = self.subscription_token_var.get().strip()
-        if token:
-            set_secret(SUBSCRIPTION_TOKEN_TARGET, token, username="fillable-subscription")
 
         self.config_data = AppConfig(
-            ai_mode=mode,
+            credit_balance=self.config_data.credit_balance,
             openai_model=model,
-            openai_api_base=openai_api_base,
-            subscription_api_base=subscription_api_base,
+            backend_api_base=backend_api_base,
+            firebase_id_token=firebase_id_token,
+            firebase_token_expiry_utc=self.config_data.firebase_token_expiry_utc,
+            firebase_email=self.firebase_email_var.get().strip(),
+            firebase_uid=self.firebase_uid_var.get().strip(),
             codex_command_template=self.config_data.codex_command_template,
         )
         save_config(self.config_data)
         return CodexCli(self.config_data)
+
+    def _refresh_subscription_ui(self) -> None:
+        if not self.user_api_key_entry:
+            return
+        if not self.user_api_key_entry.winfo_exists():
+            return
+        if self.config_data.credit_balance > 0:
+            self.user_api_key_entry.state(["disabled"])
+            self.free_key_label.grid_remove()
+            self.user_api_key_entry.grid_remove()
+            self.save_key_button.grid_remove()
+            self.subscription_hint_var.set(f"Credits available: {self.config_data.credit_balance:.2f}")
+        else:
+            self.user_api_key_entry.state(["!disabled"])
+            self.free_key_label.grid()
+            self.user_api_key_entry.grid()
+            self.save_key_button.grid()
+            self.subscription_hint_var.set("")
+        self._sync_auth_button()
+
+    def _auth_button_label(self) -> str:
+        return "Sign out" if self.config_data.firebase_uid else "Sign in"
+
+    def _sync_auth_button(self) -> None:
+        if self.auth_button is not None:
+            self.auth_button.config(text=self._auth_button_label())
+        signed_in = bool(self.config_data.firebase_uid)
+        if self.upgrade_button is not None:
+            self.upgrade_button.state(["!disabled"] if signed_in else ["disabled"])
+
+    def _on_auth_button(self) -> None:
+        if self.config_data.firebase_uid:
+            self._sign_out()
+            return
+        self._open_auth_window()
+
+    def _open_auth_window(self) -> None:
+        if self.auth_window is not None and self.auth_window.winfo_exists():
+            self.auth_window.lift()
+            self.auth_window.focus_force()
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Account")
+        win.geometry("560x420")
+        win.minsize(520, 380)
+        win.configure(bg=self.colors["bg"])
+        self.auth_window = win
+
+        container = ttk.Frame(win, style="App.TFrame", padding=14)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        auth_card = ttk.LabelFrame(container, text="Sign In / Register", style="Section.TLabelframe", padding=10)
+        auth_card.pack(fill=tk.X, expand=False)
+        ttk.Label(auth_card, text="Email").grid(row=0, column=0, sticky="w")
+        self.firebase_email_entry = ttk.Entry(auth_card, textvariable=self.firebase_email_var)
+        self.firebase_email_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        ttk.Label(auth_card, text="Password").grid(row=2, column=0, sticky="w")
+        self.firebase_password_entry = ttk.Entry(auth_card, textvariable=self.firebase_password_var, show="*")
+        self.firebase_password_entry.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        actions = ttk.Frame(auth_card, style="Card.TFrame")
+        actions.grid(row=4, column=0, columnspan=2, sticky="w")
+        ttk.Button(actions, text="Register", style="Primary.TButton", command=self._register_account).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Sign in", command=self._sign_in).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(actions, text="Sign out", command=self._sign_out).pack(side=tk.LEFT, padx=(8, 0))
+        oauth_actions = ttk.Frame(auth_card, style="Card.TFrame")
+        oauth_actions.grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(oauth_actions, text="Sign in with Google", command=lambda: self._oauth_sign_in("google")).pack(
+            side=tk.LEFT
+        )
+        auth_card.columnconfigure(0, weight=1)
+
+        status_card = ttk.LabelFrame(container, text="Account Status", style="Section.TLabelframe", padding=10)
+        status_card.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        ttk.Label(status_card, textvariable=self.account_status_var, style="Muted.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        billing_actions = ttk.Frame(status_card, style="Card.TFrame")
+        billing_actions.grid(row=1, column=0, sticky="w", pady=(10, 0))
+        ttk.Button(billing_actions, text="Check credits", command=self._check_subscription).pack(side=tk.LEFT)
+        ttk.Button(billing_actions, text="Buy credits", style="Primary.TButton", command=self._upgrade).pack(
+            side=tk.LEFT, padx=(8, 0)
+        )
+        status_card.columnconfigure(0, weight=1)
+
+    def _format_account_status(self) -> str:
+        if self.config_data.firebase_uid:
+            email = self.config_data.firebase_email or "unknown"
+            return f"Signed in as {email} ({self.config_data.firebase_uid})."
+        return "Not signed in."
+
+    def _set_account_status(self, message: str) -> None:
+        self.account_status_var.set(message)
+
+    def _save_openai_key(self) -> None:
+        api_key = self.user_api_key_var.get().strip()
+        if not api_key:
+            messagebox.showerror("OpenAI key", "Enter an OpenAI API key first.")
+            return
+        set_user_openai_key(USER_OPENAI_KEY_TARGET, api_key)
+        messagebox.showinfo("OpenAI key", "Key saved.")
+
+    def _oauth_sign_in(self, provider: str) -> None:
+        provider = provider.strip().lower()
+        if provider not in {"google", "microsoft"}:
+            messagebox.showerror("Sign in", "Unsupported provider.")
+            return
+        if self.oauth_server is not None:
+            messagebox.showinfo("Sign in", "Sign-in is already in progress.")
+            return
+
+        app = self
+
+        class OAuthHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path.startswith("/auth"):
+                    page = _build_oauth_page(provider)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(page.encode("utf-8"))
+                    return
+                self.send_response(404)
+                self.end_headers()
+
+            def do_POST(self) -> None:
+                if not self.path.startswith("/callback"):
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                body = self.rfile.read(length).decode("utf-8", errors="ignore")
+                try:
+                    payload = json.loads(body)
+                except Exception:
+                    payload = {}
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"OK. You can close this window.")
+                app.after(0, lambda: app._handle_oauth_payload(payload))
+                threading.Thread(target=app._stop_oauth_server, daemon=True).start()
+
+            def log_message(self, format: str, *args) -> None:
+                return
+
+        def _build_oauth_page(provider_name: str) -> str:
+            provider_id = "google.com" if provider_name == "google" else "microsoft.com"
+            config_json = json.dumps(FIREBASE_CONFIG)
+            return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sign in</title>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+</head>
+<body>
+  <p>Signing you in with {provider_name.title()}...</p>
+  <script>
+    const firebaseConfig = {config_json};
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    let provider;
+    if ("{provider_id}" === "google.com") {{
+      provider = new firebase.auth.GoogleAuthProvider();
+    }} else {{
+      provider = new firebase.auth.OAuthProvider("{provider_id}");
+    }}
+    auth.signInWithPopup(provider).then(async (result) => {{
+      const user = result.user;
+      const idToken = await user.getIdToken();
+      const payload = {{
+        id_token: idToken,
+        refresh_token: user.refreshToken || "",
+        email: user.email || "",
+        uid: user.uid || ""
+      }};
+      await fetch("/callback", {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json" }},
+        body: JSON.stringify(payload)
+      }});
+      document.body.innerText = "Signed in. You can close this window.";
+    }}).catch((err) => {{
+      document.body.innerText = "Sign-in failed: " + err.message;
+    }});
+  </script>
+</body>
+</html>"""
+
+        self.oauth_server = HTTPServer(("127.0.0.1", 0), OAuthHandler)
+        port = self.oauth_server.server_address[1]
+        self.oauth_thread = threading.Thread(target=self.oauth_server.serve_forever, daemon=True)
+        self.oauth_thread.start()
+        os.startfile(f"http://127.0.0.1:{port}/auth")
+
+    def _stop_oauth_server(self) -> None:
+        if self.oauth_server:
+            try:
+                self.oauth_server.shutdown()
+            except Exception:
+                pass
+            self.oauth_server = None
+            self.oauth_thread = None
+
+    def _handle_oauth_payload(self, payload: dict) -> None:
+        id_token = str(payload.get("id_token", "")).strip()
+        refresh_token = str(payload.get("refresh_token", "")).strip()
+        email_out = str(payload.get("email", "")).strip()
+        uid = str(payload.get("uid", "")).strip()
+        if not id_token or not uid:
+            messagebox.showerror("Sign in", "OAuth login did not return a valid token.")
+            return
+        exp_epoch = jwt_expiry_epoch(id_token) or 0
+        self.config_data.firebase_id_token = id_token
+        self.config_data.firebase_token_expiry_utc = exp_epoch
+        self.config_data.firebase_email = email_out
+        self.config_data.firebase_uid = uid
+        self.firebase_id_token_var.set(id_token)
+        self.firebase_email_var.set(email_out)
+        self.firebase_uid_var.set(uid)
+        save_config(self.config_data)
+        self._set_account_status(self._format_account_status())
+        self._sync_auth_button()
+        self._check_subscription(silent=True)
+
+    def _save_auth_state(
+        self,
+        *,
+        id_token: str,
+        refresh_token: str,
+        expires_in: int,
+        email: str,
+        uid: str,
+    ) -> None:
+        exp_epoch = int(__import__("time").time()) + int(expires_in or 0)
+        if not exp_epoch:
+            exp_epoch = jwt_expiry_epoch(id_token) or 0
+        self.config_data.firebase_id_token = id_token
+        self.config_data.firebase_token_expiry_utc = exp_epoch
+        self.config_data.firebase_email = email
+        self.config_data.firebase_uid = uid
+        if refresh_token:
+            set_firebase_refresh_token("Fillable.Firebase.RefreshToken", refresh_token)
+        self.firebase_id_token_var.set(id_token)
+        self.firebase_email_var.set(email)
+        self.firebase_uid_var.set(uid)
+        save_config(self.config_data)
+        self._set_account_status(self._format_account_status())
+        self._sync_auth_button()
+
+    def _current_token(self) -> str:
+        token = (self.firebase_id_token_var.get().strip() or self.config_data.firebase_id_token).strip()
+        exp_epoch = int(self.config_data.firebase_token_expiry_utc or 0)
+        if token and not is_token_expired(exp_epoch):
+            return token
+        refresh = get_firebase_refresh_token("Fillable.Firebase.RefreshToken") or ""
+        base = (self.backend_api_base_var.get().strip() or self.config_data.backend_api_base).strip()
+        if not refresh or not base:
+            return token
+        try:
+            refreshed = backend_refresh(base, refresh)
+        except Exception:
+            return token
+        token = str(refreshed.get("id_token", "") or refreshed.get("idToken", "")).strip()
+        refresh = str(refreshed.get("refresh_token", "") or refreshed.get("refreshToken", "")).strip()
+        expires_in = int(refreshed.get("expires_in", 0) or refreshed.get("expiresIn", 0) or 0)
+        if token:
+            exp_epoch = int(__import__("time").time()) + expires_in if expires_in else (jwt_expiry_epoch(token) or 0)
+            self.config_data.firebase_id_token = token
+            if refresh:
+                set_firebase_refresh_token("Fillable.Firebase.RefreshToken", refresh)
+            self.config_data.firebase_token_expiry_utc = exp_epoch
+            self.firebase_id_token_var.set(token)
+            save_config(self.config_data)
+        return token
+
+    def _backend_json(self, path: str, *, method: str = "GET", body: dict | None = None) -> dict:
+        base = (self.backend_api_base_var.get().strip() or self.config_data.backend_api_base).strip()
+        if not base:
+            raise ValueError("Backend URL is required.")
+        url = base.rstrip("/") + path
+        headers = {}
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        token = self._current_token()
+        if not token:
+            raise ValueError("Firebase ID token is required. Sign in first.")
+        headers["Authorization"] = f"Bearer {token}"
+        req = request.Request(url, data=data, headers=headers, method=method.upper())
+        try:
+            with request.urlopen(req, timeout=60) as resp:
+                text = resp.read().decode("utf-8", errors="ignore")
+        except error.HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="ignore")
+            raise ValueError(f"HTTP {exc.code} from {url}: {details[:800]}") from exc
+        except error.URLError as exc:
+            raise ValueError(f"Network error calling {url}: {exc}") from exc
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            raise ValueError("Backend response was not a JSON object.")
+        return data
+
+    def _sign_in(self) -> None:
+        email = self.firebase_email_var.get().strip()
+        password = self.firebase_password_var.get().strip()
+        if not email or not password:
+            messagebox.showerror("Sign in", "Email and password are required.")
+            return
+        try:
+            base = (self.backend_api_base_var.get().strip() or self.config_data.backend_api_base).strip()
+            if not base:
+                raise ValueError("Backend URL is required.")
+            result = backend_login(base, email, password)
+            id_token = str(result.get("id_token", "") or result.get("idToken", "")).strip()
+            refresh_token = str(result.get("refresh_token", "") or result.get("refreshToken", "")).strip()
+            expires_in = int(result.get("expires_in", 0) or result.get("expiresIn", 0) or 0)
+            uid = str(result.get("uid", "") or result.get("localId", "")).strip()
+            email_out = str(result.get("email", email)).strip()
+            if not id_token or not uid:
+                raise BackendAuthError("Sign-in response missing token or uid.")
+            self._save_auth_state(
+                id_token=id_token,
+                refresh_token=refresh_token,
+                expires_in=expires_in,
+                email=email_out,
+                uid=uid,
+            )
+            messagebox.showinfo("Sign in", "Signed in successfully.")
+            self._check_subscription(silent=True)
+        except Exception as exc:
+            messagebox.showerror("Sign in", str(exc))
+
+    def _register_account(self) -> None:
+        email = self.firebase_email_var.get().strip()
+        password = self.firebase_password_var.get().strip()
+        if not email or not password:
+            messagebox.showerror("Register", "Email and password are required.")
+            return
+        if not self._password_ok(password):
+            return
+        try:
+            base = (self.backend_api_base_var.get().strip() or self.config_data.backend_api_base).strip()
+            if not base:
+                raise ValueError("Backend URL is required.")
+            result = backend_register(base, email, password)
+            id_token = str(result.get("id_token", "") or result.get("idToken", "")).strip()
+            refresh_token = str(result.get("refresh_token", "") or result.get("refreshToken", "")).strip()
+            expires_in = int(result.get("expires_in", 0) or result.get("expiresIn", 0) or 0)
+            uid = str(result.get("uid", "") or result.get("localId", "")).strip()
+            email_out = str(result.get("email", email)).strip()
+            if not id_token or not uid:
+                raise BackendAuthError("Register response missing token or uid.")
+            self._save_auth_state(
+                id_token=id_token,
+                refresh_token=refresh_token,
+                expires_in=expires_in,
+                email=email_out,
+                uid=uid,
+            )
+            messagebox.showinfo("Register", "Account created and signed in.")
+            self._check_subscription(silent=True)
+        except Exception as exc:
+            messagebox.showerror("Register", str(exc))
+
+    def _password_ok(self, password: str) -> bool:
+        if len(password) < 8:
+            messagebox.showerror("Register", "Password must be at least 8 characters.")
+            return False
+        if password.lower() == password or password.upper() == password:
+            messagebox.showerror("Register", "Password must include upper and lower case letters.")
+            return False
+        if not any(ch.isdigit() for ch in password):
+            messagebox.showerror("Register", "Password must include a number.")
+            return False
+        if not any(not ch.isalnum() for ch in password):
+            messagebox.showerror("Register", "Password must include a special character.")
+            return False
+        return True
+
+    def _sign_out(self) -> None:
+        self.config_data.firebase_id_token = ""
+        self.config_data.firebase_token_expiry_utc = 0
+        self.config_data.firebase_email = ""
+        self.config_data.firebase_uid = ""
+        self.config_data.credit_balance = 0.0
+        delete_firebase_refresh_token("Fillable.Firebase.RefreshToken")
+        self.firebase_id_token_var.set("")
+        self.firebase_email_var.set("")
+        self.firebase_uid_var.set("")
+        save_config(self.config_data)
+        self._set_account_status(self._format_account_status())
+        self._sync_auth_button()
+        self.subscription_status_var.set("Credits: --")
+        self._refresh_subscription_ui()
+        messagebox.showinfo("Sign out", "Signed out.")
+
+    def _check_subscription(self, *, silent: bool = False) -> None:
+        try:
+            data = self._backend_json("/v1/credits", method="GET")
+            credits = float(data.get("credits", 0.0) or 0.0)
+            self.subscription_status_var.set(f"Credits: {credits:.2f}")
+            self.config_data.credit_balance = credits
+            save_config(self.config_data)
+            self._refresh_subscription_ui()
+            status_message = f"Credits remaining: {credits:.2f}"
+            self._set_account_status(status_message)
+            if not silent:
+                messagebox.showinfo("Credits", status_message)
+        except Exception as exc:
+            if not silent:
+                messagebox.showerror("Credits", str(exc))
+
+    def _upgrade(self) -> None:
+        try:
+            data = self._backend_json("/v1/billing/create-checkout-session", method="POST", body={})
+            url = str(data.get("url", "")).strip()
+            if not url:
+                raise ValueError("Checkout URL not returned.")
+            os.startfile(url)
+            self.credit_poll_after_upgrade = 5
+            self.after(15000, self._poll_credits_after_upgrade)
+        except Exception as exc:
+            messagebox.showerror("Upgrade", str(exc))
+
+    def _poll_credits_after_upgrade(self) -> None:
+        if self.credit_poll_after_upgrade <= 0:
+            return
+        self.credit_poll_after_upgrade -= 1
+        try:
+            self._check_subscription(silent=True)
+        except Exception:
+            pass
+        if self.credit_poll_after_upgrade > 0:
+            self.after(20000, self._poll_credits_after_upgrade)
+
 
     def _resolve_template_path(self, force_regenerate: bool) -> Path:
         source_raw = self.source_var.get().strip()

@@ -69,10 +69,13 @@ class FillableTemplate:
 
 @dataclass
 class AppConfig:
-    ai_mode: str = "user_key"
-    openai_model: str = "gpt-4.1-mini"
-    openai_api_base: str = "https://api.openai.com/v1"
-    subscription_api_base: str = ""
+    credit_balance: float = 0.0
+    openai_model: str = "gpt-5.4"
+    backend_api_base: str = "http://127.0.0.1:8081"
+    firebase_id_token: str = ""
+    firebase_token_expiry_utc: int = 0
+    firebase_email: str = ""
+    firebase_uid: str = ""
     codex_command_template: str = (
         'Get-Content -Raw "{prompt_file}" | codex exec --skip-git-repo-check --output-last-message "{output_file}"'
     )
