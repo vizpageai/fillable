@@ -12,7 +12,7 @@ to your OpenAI proxy by a credit balance. Users buy credits via Stripe.
 ## Environment
 
 ```
-OPENAI_API_KEY=***REMOVED***
+OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://api.openai.com/v1
 
 STRIPE_SECRET_KEY=sk_live_...

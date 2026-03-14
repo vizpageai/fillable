@@ -43,3 +43,7 @@ Thumbs.db
 .idea/
 
 example/
+# Secrets
+.env
+backend-another/.env
+*.publishsettings
