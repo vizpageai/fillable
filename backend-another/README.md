@@ -25,28 +25,11 @@ STRIPE_PORTAL_RETURN_URL=https://your-app/account
 # Firebase service account JSON or path
 FIREBASE_CREDENTIALS_JSON=
 # or:
-GOOGLE_APPLICATION_CREDENTIALS=C:\Users\E20263395\Apps\vizpage-backend\courai-firebase-adminsdk-fbsvc-0a3f09f1ba.json
+GOOGLE_APPLICATION_CREDENTIALS
 
 FIREBASE_PROJECT_ID=courai
 REQUIRE_EMAIL_VERIFIED=false
 ```
-
-$apiKey = "AIzaSyBZzNCcFybRrIxQilLrWfopI22LxGe7d1g"
-  $email = "hxk111@yeah.net"
-  $password = "123456"
-
-  $body = @{
-    email = $email
-    password = $password
-    returnSecureToken = $true
-  } | ConvertTo-Json
-
-  $resp = Invoke-RestMethod -Method Post `
-    -Uri "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=$apiKey" `
-    -ContentType "application/json" `
-    -Body $body
-
-  $idToken = $resp.idToken
 
 
 ## Run locally
