@@ -40,6 +40,7 @@ class Settings:
     firebase_messaging_sender_id: str = os.getenv("FIREBASE_MESSAGING_SENDER_ID", "")
     firebase_measurement_id: str = os.getenv("FIREBASE_MEASUREMENT_ID", "")
     firebase_storage_bucket: str = os.getenv("FIREBASE_STORAGE_BUCKET", "")
+    firebase_web_config_json: str = os.getenv("FIREBASE_WEB_CONFIG_JSON", "")
 
     require_email_verified: bool = _truthy(os.getenv("REQUIRE_EMAIL_VERIFIED", "false"))
 
@@ -58,6 +59,46 @@ class Settings:
             return None
 
     def firebase_web_config(self) -> dict:
+        if self.firebase_web_config_json.strip():
+            try:
+                raw = json.loads(self.firebase_web_config_json)
+                if isinstance(raw, dict):
+                    return {
+                        "apiKey": str(raw.get("apiKey", self.firebase_web_api_key)),
+                        "authDomain": str(
+                            raw.get(
+                                "authDomain",
+                                self.firebase_auth_domain or f"{self.firebase_project_id}.firebaseapp.com",
+                            )
+                        ),
+                        "projectId": str(raw.get("projectId", self.firebase_project_id)),
+                        "storageBucket": str(raw.get("storageBucket", self.firebase_storage_bucket)),
+                        "messagingSenderId": str(
+                            raw.get("messagingSenderId", self.firebase_messaging_sender_id)
+                        ),
+                        "appId": str(raw.get("appId", self.firebase_app_id)),
+                        "measurementId": str(raw.get("measurementId", self.firebase_measurement_id)),
+                    }
+            except Exception:
+                pass
+        credentials = self.firebase_credentials_dict() or {}
+        if isinstance(credentials, dict) and "apiKey" in credentials:
+            return {
+                "apiKey": str(credentials.get("apiKey", self.firebase_web_api_key)),
+                "authDomain": str(
+                    credentials.get(
+                        "authDomain",
+                        self.firebase_auth_domain or f"{self.firebase_project_id}.firebaseapp.com",
+                    )
+                ),
+                "projectId": str(credentials.get("projectId", self.firebase_project_id)),
+                "storageBucket": str(credentials.get("storageBucket", self.firebase_storage_bucket)),
+                "messagingSenderId": str(
+                    credentials.get("messagingSenderId", self.firebase_messaging_sender_id)
+                ),
+                "appId": str(credentials.get("appId", self.firebase_app_id)),
+                "measurementId": str(credentials.get("measurementId", self.firebase_measurement_id)),
+            }
         return {
             "apiKey": self.firebase_web_api_key,
             "authDomain": self.firebase_auth_domain or f"{self.firebase_project_id}.firebaseapp.com",
