@@ -71,7 +71,7 @@ class FillableTemplate:
 class AppConfig:
     credit_balance: float = 0.0
     openai_model: str = "gpt-5.4"
-    backend_api_base: str = "http://127.0.0.1:8081"
+    backend_api_base: str = "https://fillable.vizpageai.com"
     firebase_id_token: str = ""
     firebase_token_expiry_utc: int = 0
     firebase_email: str = ""

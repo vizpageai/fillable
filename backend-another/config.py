@@ -35,6 +35,11 @@ class Settings:
     firebase_google_credentials_path: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
     firebase_project_id: str = os.getenv("FIREBASE_PROJECT_ID", "")
     firebase_web_api_key: str = os.getenv("FIREBASE_WEB_API_KEY", "")
+    firebase_auth_domain: str = os.getenv("FIREBASE_AUTH_DOMAIN", "")
+    firebase_app_id: str = os.getenv("FIREBASE_APP_ID", "")
+    firebase_messaging_sender_id: str = os.getenv("FIREBASE_MESSAGING_SENDER_ID", "")
+    firebase_measurement_id: str = os.getenv("FIREBASE_MEASUREMENT_ID", "")
+    firebase_storage_bucket: str = os.getenv("FIREBASE_STORAGE_BUCKET", "")
 
     require_email_verified: bool = _truthy(os.getenv("REQUIRE_EMAIL_VERIFIED", "false"))
 
@@ -51,6 +56,17 @@ class Settings:
             return json.loads(raw)
         except Exception:
             return None
+
+    def firebase_web_config(self) -> dict:
+        return {
+            "apiKey": self.firebase_web_api_key,
+            "authDomain": self.firebase_auth_domain or f"{self.firebase_project_id}.firebaseapp.com",
+            "projectId": self.firebase_project_id,
+            "storageBucket": self.firebase_storage_bucket,
+            "messagingSenderId": self.firebase_messaging_sender_id,
+            "appId": self.firebase_app_id,
+            "measurementId": self.firebase_measurement_id,
+        }
 
 
 SETTINGS = Settings()

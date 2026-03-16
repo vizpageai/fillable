@@ -1,0 +1,48 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+
+    <!-- AI Gradient -->
+    <linearGradient id="aiGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+
+    <!-- Glow -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- App Background -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bgGrad)"/>
+
+  <!-- Document -->
+  <rect x="70" y="50" width="116" height="150" rx="16" fill="#F8FAFC"/>
+
+  <!-- Fold -->
+  <polygon points="170,50 186,50 186,66" fill="#E2E8F0"/>
+
+  <!-- Text Lines -->
+  <rect x="90" y="85" width="80" height="8" rx="4" fill="#CBD5E1"/>
+  <rect x="90" y="105" width="70" height="8" rx="4" fill="#CBD5E1"/>
+  <rect x="90" y="125" width="75" height="8" rx="4" fill="#CBD5E1"/>
+
+  <!-- AI Core -->
+  <circle cx="128" cy="165" r="26" fill="url(#aiGrad)" filter="url(#glow)"/>
+
+  <!-- Subtle "F" (Negative Space Style in White) -->
+  <rect x="118" y="148" width="8" height="34" rx="2" fill="white"/>
+  <rect x="118" y="148" width="22" height="6" rx="2" fill="white"/>
+  <rect x="118" y="162" width="16" height="6" rx="2" fill="white"/>
+
+</svg>

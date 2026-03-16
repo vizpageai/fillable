@@ -6,7 +6,7 @@ import stripe
 
 from auth_service import AuthServiceError, refresh_id_token, sign_in_with_password
 from config import SETTINGS
-from firestore_db import add_credits, deduct_credits, get_balance, set_email
+from firestore_db import add_credits, deduct_credits, get_auth_session, get_balance, set_email, store_auth_session
 from firebase_auth import init_firebase, verify_firebase_token
 from models import (
     AuthRequest,
@@ -226,3 +226,85 @@ async def stripe_webhook(request: Request) -> JSONResponse:
             credits = (float(amount_total) / 100.0) * 10.0
             add_credits(firebase_uid, credits)
     return JSONResponse({"received": True})
+@app.get("/auth/google", response_class=HTMLResponse)
+def auth_google(session_id: str) -> str:
+    if not session_id or len(session_id) < 8:
+        raise HTTPException(status_code=400, detail="Missing session_id.")
+    config = SETTINGS.firebase_web_config()
+    if not config.get("apiKey") or not config.get("projectId"):
+        raise HTTPException(status_code=500, detail="Firebase web config missing.")
+    config_json = json.dumps(config)
+    return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sign in</title>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+</head>
+<body>
+  <p>Signing you in with Google...</p>
+  <script>
+    const firebaseConfig = {config_json};
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const provider = new firebase.auth.GoogleAuthProvider();
+    auth.signInWithPopup(provider).then(async (result) => {{
+      const user = result.user;
+      const idToken = await user.getIdToken();
+      const payload = {{
+        session_id: "{session_id}",
+        id_token: idToken,
+        refresh_token: user.refreshToken || "",
+        email: user.email || "",
+        uid: user.uid || ""
+      }};
+      await fetch("/v1/auth/complete", {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json" }},
+        body: JSON.stringify(payload)
+      }});
+      document.body.innerText = "Signed in. You can close this window.";
+      setTimeout(() => window.close(), 1200);
+    }}).catch((err) => {{
+      document.body.innerText = "Sign-in failed: " + err.message;
+    }});
+  </script>
+</body>
+</html>"""
+
+
+@app.post("/v1/auth/complete")
+def auth_complete(payload: dict) -> dict:
+    session_id = str(payload.get("session_id", "")).strip()
+    id_token = str(payload.get("id_token", "")).strip()
+    refresh_token = str(payload.get("refresh_token", "")).strip()
+    email = str(payload.get("email", "")).strip()
+    uid = str(payload.get("uid", "")).strip()
+    if not session_id or not id_token or not uid:
+        raise HTTPException(status_code=400, detail="Missing auth payload.")
+    try:
+        user = verify_firebase_token(id_token)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if user.uid != uid:
+        raise HTTPException(status_code=401, detail="Token mismatch.")
+    store_auth_session(
+        session_id,
+        {
+            "status": "ok",
+            "id_token": id_token,
+            "refresh_token": refresh_token,
+            "email": email or user.email or "",
+            "uid": uid,
+        },
+    )
+    return {"ok": True}
+
+
+@app.get("/v1/auth/poll")
+def auth_poll(session_id: str) -> dict:
+    payload = get_auth_session(session_id)
+    if not payload:
+        return {"status": "pending"}
+    return payload

@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="FillableDOC"
+    Manufacturer="VizpageAI"
+    Version="1.0.0"
+    UpgradeCode="{C7F7DCA6-6E3D-4C1F-BE3E-5E942C5B2D99}"
+    Scope="perUser"
+    InstallerVersion="500">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of FillableDOC is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="FillableDOC" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppProgramMenuFolder" Name="FillableDOC" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="FillableDOC" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentGroupRef Id="AppShortcuts" />
+      <ComponentGroupRef Id="ContextMenuRegistry" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Component Id="cmpFillableExe" Guid="{9E6B2CE4-BE8B-4AF8-8B11-B0A15066A1EA}">
+        <File Id="FillableExe" Source="$(sys.SOURCEFILEDIR)..\..\dist\FillableDOC.exe" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="AppShortcuts" Directory="AppProgramMenuFolder">
+      <Component Id="cmpShortcut" Guid="{9B1C4BAF-9E5C-42E3-AB6C-3C9AC8E6E8A4}">
+        <Shortcut
+          Id="StartMenuShortcut"
+          Name="FillableDOC"
+          Description="FillableDOC - Codex Document Autofill"
+          Target="[#FillableExe]"
+          WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveProgramMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\FillableDOC" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="ContextMenuRegistry" Directory="INSTALLFOLDER">
+      <Component Id="cmpContextMenu" Guid="{F4E894B6-11B4-4C7F-8A20-2C572E2D1B08}">
+        <RegistryValue Root="HKCU" Key="Software\Classes\.fillable.json" Type="string" Value="Fillable.Template" KeyPath="yes" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\Fillable.Template" Type="string" Value="Fillable Template" />
+
+        <RegistryValue Root="HKCU" Key="Software\Classes\Fillable.Template\shell\open\command" Type="string" Value="&quot;[#FillableExe]&quot; &quot;%1&quot;" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\Fillable.Template\shell\FillTemplate" Type="string" Value="Fill Template (Codex)" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\Fillable.Template\shell\FillTemplate" Name="Icon" Type="string" Value="imageres.dll,-5302" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\Fillable.Template\shell\FillTemplate\command" Type="string" Value="&quot;[#FillableExe]&quot; --fill-template &quot;%1&quot; --prompt-instructions" />
+
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.docx\shell\FillableGenerateTemplate" Type="string" Value="Generate AI Template (Codex)" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.docx\shell\FillableGenerateTemplate" Name="Icon" Type="string" Value="imageres.dll,-5302" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.docx\shell\FillableGenerateTemplate\command" Type="string" Value="&quot;[#FillableExe]&quot; --generate-template &quot;%1&quot;" />
+
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pptx\shell\FillableGenerateTemplate" Type="string" Value="Generate AI Template (Codex)" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pptx\shell\FillableGenerateTemplate" Name="Icon" Type="string" Value="imageres.dll,-5302" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pptx\shell\FillableGenerateTemplate\command" Type="string" Value="&quot;[#FillableExe]&quot; --generate-template &quot;%1&quot;" />
+
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pdf\shell\FillableGenerateTemplate" Type="string" Value="Generate AI Template (Codex)" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pdf\shell\FillableGenerateTemplate" Name="Icon" Type="string" Value="imageres.dll,-5302" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pdf\shell\FillableGenerateTemplate\command" Type="string" Value="&quot;[#FillableExe]&quot; --generate-template &quot;%1&quot;" />
+
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.docx\shell\FillableFillTemplate" Type="string" Value="Fill Template (Codex)" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.docx\shell\FillableFillTemplate" Name="Icon" Type="string" Value="imageres.dll,-5302" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.docx\shell\FillableFillTemplate\command" Type="string" Value="&quot;[#FillableExe]&quot; --fill-template &quot;%1&quot; --prompt-instructions" />
+
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pptx\shell\FillableFillTemplate" Type="string" Value="Fill Template (Codex)" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pptx\shell\FillableFillTemplate" Name="Icon" Type="string" Value="imageres.dll,-5302" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pptx\shell\FillableFillTemplate\command" Type="string" Value="&quot;[#FillableExe]&quot; --fill-template &quot;%1&quot; --prompt-instructions" />
+
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pdf\shell\FillableFillTemplate" Type="string" Value="Fill Template (Codex)" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pdf\shell\FillableFillTemplate" Name="Icon" Type="string" Value="imageres.dll,-5302" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pdf\shell\FillableFillTemplate\command" Type="string" Value="&quot;[#FillableExe]&quot; --fill-template &quot;%1&quot; --prompt-instructions" />
+
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.txt\shell\FillableFillTemplate" Type="string" Value="Fill Template (Codex)" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.txt\shell\FillableFillTemplate" Name="Icon" Type="string" Value="imageres.dll,-5302" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.txt\shell\FillableFillTemplate\command" Type="string" Value="&quot;[#FillableExe]&quot; --fill-template &quot;%1&quot; --prompt-instructions" />
+
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.json\shell\FillableFillTemplate" Type="string" Value="Fill Template (Codex)" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.json\shell\FillableFillTemplate" Name="Icon" Type="string" Value="imageres.dll,-5302" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\SystemFileAssociations\.json\shell\FillableFillTemplate\command" Type="string" Value="&quot;[#FillableExe]&quot; --fill-template &quot;%1&quot; --prompt-instructions" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

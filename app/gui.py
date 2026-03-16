@@ -7,9 +7,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from urllib import error, request
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading
-import urllib.parse
+import uuid
 
 from app.backend_auth import BackendAuthError, login as backend_login, refresh as backend_refresh, register as backend_register
 from app.codex_cli import USER_OPENAI_KEY_TARGET, CodexCli, CodexCliError
@@ -29,16 +27,6 @@ from app.template_engine import (
 )
 from app.utils import AppConfig, load_config, load_json, save_config
 from app.version import APP_NAME, APP_VERSION
-
-FIREBASE_CONFIG = {
-    "apiKey": "AIzaSyBZzNCcFybRrIxQilLrWfopI22LxGe7d1g",
-    "authDomain": "courai.firebaseapp.com",
-    "projectId": "courai",
-    "storageBucket": "courai.firebasestorage.app",
-    "messagingSenderId": "100651010107",
-    "appId": "1:100651010107:web:5e4c183924ee3846f0341e",
-    "measurementId": "G-DDXRVGRX5Y",
-}
 
 
 class FillableApp(tk.Tk):
@@ -72,8 +60,8 @@ class FillableApp(tk.Tk):
         self.auth_button = None
         self.upgrade_button = None
         self.credit_poll_after_upgrade = 0
-        self.oauth_server: HTTPServer | None = None
-        self.oauth_thread: threading.Thread | None = None
+        self.oauth_session_id: str | None = None
+        self.oauth_poll_attempts = 0
 
         self._init_styles()
         self._set_window_icon()
@@ -483,7 +471,7 @@ class FillableApp(tk.Tk):
             raise ValueError("Model must be one of: gpt-5.4, gpt-5.3-codex, gpt-5.2, gpt-4o.")
         if not model:
             raise ValueError("OpenAI model is required")
-        backend_api_base = self.backend_api_base_var.get().strip() or self.config_data.backend_api_base
+        backend_api_base = self._backend_base()
         firebase_id_token = self.firebase_id_token_var.get().strip()
         use_subscription = bool(self.config_data.credit_balance > 0 and firebase_id_token)
 
@@ -614,107 +602,47 @@ class FillableApp(tk.Tk):
 
     def _oauth_sign_in(self, provider: str) -> None:
         provider = provider.strip().lower()
-        if provider not in {"google", "microsoft"}:
+        if provider != "google":
             messagebox.showerror("Sign in", "Unsupported provider.")
             return
-        if self.oauth_server is not None:
+        if self.oauth_session_id:
             messagebox.showinfo("Sign in", "Sign-in is already in progress.")
             return
+        base = self._backend_base()
+        if not base:
+            messagebox.showerror("Sign in", "Backend URL is required.")
+            return
+        self.oauth_session_id = str(uuid.uuid4())
+        self.oauth_poll_attempts = 0
+        os.startfile(f"{base.rstrip('/')}/auth/google?session_id={self.oauth_session_id}")
+        self.after(2500, self._poll_oauth_session)
 
-        app = self
-
-        class OAuthHandler(BaseHTTPRequestHandler):
-            def do_GET(self) -> None:
-                if self.path.startswith("/auth"):
-                    page = _build_oauth_page(provider)
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.end_headers()
-                    self.wfile.write(page.encode("utf-8"))
-                    return
-                self.send_response(404)
-                self.end_headers()
-
-            def do_POST(self) -> None:
-                if not self.path.startswith("/callback"):
-                    self.send_response(404)
-                    self.end_headers()
-                    return
-                length = int(self.headers.get("Content-Length", "0") or 0)
-                body = self.rfile.read(length).decode("utf-8", errors="ignore")
-                try:
-                    payload = json.loads(body)
-                except Exception:
-                    payload = {}
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(b"OK. You can close this window.")
-                app.after(0, lambda: app._handle_oauth_payload(payload))
-                threading.Thread(target=app._stop_oauth_server, daemon=True).start()
-
-            def log_message(self, format: str, *args) -> None:
-                return
-
-        def _build_oauth_page(provider_name: str) -> str:
-            provider_id = "google.com" if provider_name == "google" else "microsoft.com"
-            config_json = json.dumps(FIREBASE_CONFIG)
-            return f"""<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Sign in</title>
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
-</head>
-<body>
-  <p>Signing you in with {provider_name.title()}...</p>
-  <script>
-    const firebaseConfig = {config_json};
-    firebase.initializeApp(firebaseConfig);
-    const auth = firebase.auth();
-    let provider;
-    if ("{provider_id}" === "google.com") {{
-      provider = new firebase.auth.GoogleAuthProvider();
-    }} else {{
-      provider = new firebase.auth.OAuthProvider("{provider_id}");
-    }}
-    auth.signInWithPopup(provider).then(async (result) => {{
-      const user = result.user;
-      const idToken = await user.getIdToken();
-      const payload = {{
-        id_token: idToken,
-        refresh_token: user.refreshToken || "",
-        email: user.email || "",
-        uid: user.uid || ""
-      }};
-      await fetch("/callback", {{
-        method: "POST",
-        headers: {{ "Content-Type": "application/json" }},
-        body: JSON.stringify(payload)
-      }});
-      document.body.innerText = "Signed in. You can close this window.";
-    }}).catch((err) => {{
-      document.body.innerText = "Sign-in failed: " + err.message;
-    }});
-  </script>
-</body>
-</html>"""
-
-        self.oauth_server = HTTPServer(("127.0.0.1", 0), OAuthHandler)
-        port = self.oauth_server.server_address[1]
-        self.oauth_thread = threading.Thread(target=self.oauth_server.serve_forever, daemon=True)
-        self.oauth_thread.start()
-        os.startfile(f"http://127.0.0.1:{port}/auth")
-
-    def _stop_oauth_server(self) -> None:
-        if self.oauth_server:
-            try:
-                self.oauth_server.shutdown()
-            except Exception:
-                pass
-            self.oauth_server = None
-            self.oauth_thread = None
+    def _poll_oauth_session(self) -> None:
+        if not self.oauth_session_id:
+            return
+        self.oauth_poll_attempts += 1
+        if self.oauth_poll_attempts > 20:
+            self.oauth_session_id = None
+            messagebox.showerror("Sign in", "Sign-in timed out. Please try again.")
+            return
+        base = self._backend_base()
+        if not base:
+            self.oauth_session_id = None
+            return
+        url = f"{base.rstrip('/')}/v1/auth/poll?session_id={self.oauth_session_id}"
+        try:
+            req = request.Request(url, method="GET")
+            with request.urlopen(req, timeout=15) as resp:
+                text = resp.read().decode("utf-8", errors="ignore")
+            data = json.loads(text)
+        except Exception:
+            self.after(2500, self._poll_oauth_session)
+            return
+        if not isinstance(data, dict) or data.get("status") != "ok":
+            self.after(2500, self._poll_oauth_session)
+            return
+        self.oauth_session_id = None
+        self._handle_oauth_payload(data)
 
     def _handle_oauth_payload(self, payload: dict) -> None:
         id_token = str(payload.get("id_token", "")).strip()
@@ -729,6 +657,8 @@ class FillableApp(tk.Tk):
         self.config_data.firebase_token_expiry_utc = exp_epoch
         self.config_data.firebase_email = email_out
         self.config_data.firebase_uid = uid
+        if refresh_token:
+            set_firebase_refresh_token("Fillable.Firebase.RefreshToken", refresh_token)
         self.firebase_id_token_var.set(id_token)
         self.firebase_email_var.set(email_out)
         self.firebase_uid_var.set(uid)
@@ -768,7 +698,7 @@ class FillableApp(tk.Tk):
         if token and not is_token_expired(exp_epoch):
             return token
         refresh = get_firebase_refresh_token("Fillable.Firebase.RefreshToken") or ""
-        base = (self.backend_api_base_var.get().strip() or self.config_data.backend_api_base).strip()
+        base = self._backend_base()
         if not refresh or not base:
             return token
         try:
@@ -788,8 +718,24 @@ class FillableApp(tk.Tk):
             save_config(self.config_data)
         return token
 
-    def _backend_json(self, path: str, *, method: str = "GET", body: dict | None = None) -> dict:
+    def _backend_base(self) -> str:
         base = (self.backend_api_base_var.get().strip() or self.config_data.backend_api_base).strip()
+        if (
+            not base
+            or "localhost" in base
+            or "127.0.0.1" in base
+            or "[::1]" in base
+        ):
+            base = AppConfig().backend_api_base
+        if self.backend_api_base_var.get().strip() != base:
+            self.backend_api_base_var.set(base)
+        if self.config_data.backend_api_base != base:
+            self.config_data.backend_api_base = base
+            save_config(self.config_data)
+        return base
+
+    def _backend_json(self, path: str, *, method: str = "GET", body: dict | None = None) -> dict:
+        base = self._backend_base()
         if not base:
             raise ValueError("Backend URL is required.")
         url = base.rstrip("/") + path
@@ -823,7 +769,7 @@ class FillableApp(tk.Tk):
             messagebox.showerror("Sign in", "Email and password are required.")
             return
         try:
-            base = (self.backend_api_base_var.get().strip() or self.config_data.backend_api_base).strip()
+            base = self._backend_base()
             if not base:
                 raise ValueError("Backend URL is required.")
             result = backend_login(base, email, password)
@@ -855,7 +801,7 @@ class FillableApp(tk.Tk):
         if not self._password_ok(password):
             return
         try:
-            base = (self.backend_api_base_var.get().strip() or self.config_data.backend_api_base).strip()
+            base = self._backend_base()
             if not base:
                 raise ValueError("Backend URL is required.")
             result = backend_register(base, email, password)

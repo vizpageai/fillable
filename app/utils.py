@@ -30,12 +30,21 @@ def load_config() -> AppConfig:
         credit_balance = max(credit_balance, 0.01)
     model = str(raw.get("openai_model", AppConfig().openai_model)).strip() or AppConfig().openai_model
     backend_api_base = str(raw.get("backend_api_base", AppConfig().backend_api_base)).strip()
+    backend_base_forced = False
+    if (
+        not backend_api_base
+        or "localhost" in backend_api_base
+        or "127.0.0.1" in backend_api_base
+        or "[::1]" in backend_api_base
+    ):
+        backend_api_base = AppConfig().backend_api_base
+        backend_base_forced = True
     firebase_id_token = str(raw.get("firebase_id_token", "")).strip()
     firebase_token_expiry_utc = int(raw.get("firebase_token_expiry_utc", 0) or 0)
     firebase_email = str(raw.get("firebase_email", "")).strip()
     firebase_uid = str(raw.get("firebase_uid", "")).strip()
     cmd = str(raw.get("codex_command_template", AppConfig().codex_command_template))
-    return AppConfig(
+    config = AppConfig(
         credit_balance=credit_balance,
         openai_model=model,
         backend_api_base=backend_api_base,
@@ -45,6 +54,9 @@ def load_config() -> AppConfig:
         firebase_uid=firebase_uid,
         codex_command_template=cmd,
     )
+    if backend_base_forced:
+        save_config(config)
+    return config
 
 
 def save_config(config: AppConfig) -> None:

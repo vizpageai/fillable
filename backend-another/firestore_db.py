@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple
 
 from firebase_admin import firestore
@@ -72,3 +72,31 @@ def deduct_credits(uid: str, amount: float) -> float:
         return new_balance
 
     return _tx_update(_client().transaction())
+
+
+def store_auth_session(session_id: str, payload: dict, ttl_seconds: int = 600) -> None:
+    now = datetime.now(timezone.utc)
+    _client().collection("auth_sessions").document(session_id).set(
+        {
+            "payload": payload,
+            "created_at": now,
+            "expires_at": now + timedelta(seconds=ttl_seconds),
+        }
+    )
+
+
+def get_auth_session(session_id: str) -> Optional[dict]:
+    doc_ref = _client().collection("auth_sessions").document(session_id)
+    snap = doc_ref.get()
+    if not snap.exists:
+        return None
+    data = snap.to_dict() or {}
+    expires_at = data.get("expires_at")
+    if expires_at and hasattr(expires_at, "timestamp"):
+        if datetime.now(timezone.utc).timestamp() > expires_at.timestamp():
+            doc_ref.delete()
+            return None
+    payload = data.get("payload")
+    if payload:
+        doc_ref.delete()
+    return payload
