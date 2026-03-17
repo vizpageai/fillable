@@ -103,3 +103,27 @@ def get_auth_session(session_id: str) -> Optional[dict]:
     if payload:
         doc_ref.delete()
     return payload
+
+
+def claim_webhook_event(event_id: str, ttl_seconds: int = 86400) -> bool:
+    if not event_id:
+        return False
+    now = datetime.now(timezone.utc)
+    doc_ref = _client().collection("webhook_events").document(event_id)
+    created = False
+
+    @firestore.transactional
+    def _tx_claim(transaction: firestore.Transaction) -> bool:
+        snap = doc_ref.get(transaction=transaction)
+        if snap.exists:
+            return False
+        transaction.set(
+            doc_ref,
+            {
+                "created_at": now,
+                "expires_at": now + timedelta(seconds=ttl_seconds),
+            },
+        )
+        return True
+
+    return _tx_claim(_client().transaction())

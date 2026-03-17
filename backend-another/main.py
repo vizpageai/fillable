@@ -8,7 +8,15 @@ import stripe
 
 from auth_service import AuthServiceError, refresh_id_token, sign_in_with_password
 from config import SETTINGS
-from firestore_db import add_credits, deduct_credits, get_auth_session, get_balance, set_email, store_auth_session
+from firestore_db import (
+    add_credits,
+    claim_webhook_event,
+    deduct_credits,
+    get_auth_session,
+    get_balance,
+    set_email,
+    store_auth_session,
+)
 from firebase_auth import init_firebase, verify_firebase_token
 from models import (
     AuthRequest,
@@ -214,6 +222,9 @@ async def stripe_webhook(request: Request) -> JSONResponse:
 
     init_stripe()
     event_type = event.get("type", "")
+    event_id = str(event.get("id", "")).strip()
+    if event_id and not claim_webhook_event(event_id):
+        return JSONResponse({"received": True, "deduped": True})
     if event_type == "checkout.session.completed":
         session = event.get("data", {}).get("object", {}) or {}
         firebase_uid = str(session.get("client_reference_id", "")).strip()
