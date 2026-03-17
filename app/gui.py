@@ -8,7 +8,6 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from urllib import error, request
 import uuid
-
 from app.backend_auth import BackendAuthError, login as backend_login, refresh as backend_refresh, register as backend_register
 from app.codex_cli import USER_OPENAI_KEY_TARGET, CodexCli, CodexCliError
 from app.firebase_auth import is_token_expired, jwt_expiry_epoch
