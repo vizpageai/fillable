@@ -5,8 +5,11 @@ from typing import Optional, Tuple
 
 from firebase_admin import firestore
 
+from firebase_auth import init_firebase
+
 
 def _client() -> firestore.Client:
+    init_firebase()
     return firestore.client()
 
 
