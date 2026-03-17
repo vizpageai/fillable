@@ -202,7 +202,7 @@ def openai_proxy(
             output_tokens = max(1, int(len(str(content)) / 4))
         except Exception:
             output_tokens = 1
-    credits_used = output_tokens * 0.0002
+    credits_used = output_tokens * 0.0003
     remaining = deduct_credits(uid, credits_used)
     response["credits_used"] = round(credits_used, 6)
     response["credits_remaining"] = round(remaining, 6)
@@ -227,6 +227,9 @@ async def stripe_webhook(request: Request) -> JSONResponse:
         return JSONResponse({"received": True, "deduped": True})
     if event_type == "checkout.session.completed":
         session = event.get("data", {}).get("object", {}) or {}
+        session_id = str(session.get("id", "")).strip()
+        if session_id and not claim_webhook_event(f"session:{session_id}"):
+            return JSONResponse({"received": True, "deduped": True, "scope": "session"})
         firebase_uid = str(session.get("client_reference_id", "")).strip()
         customer_id = session.get("customer")
         amount_total = session.get("amount_total") or session.get("amount_subtotal") or 0
