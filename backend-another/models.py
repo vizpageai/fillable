@@ -40,3 +40,9 @@ class CreditsResponse(BaseModel):
 class ProxyRequest(BaseModel):
     payload: Dict[str, Any]
     model_fallback: Optional[str] = None
+
+
+class FeedbackRequest(BaseModel):
+    name: str
+    email: str
+    message: str

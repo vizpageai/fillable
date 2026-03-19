@@ -127,3 +127,16 @@ def claim_webhook_event(event_id: str, ttl_seconds: int = 86400) -> bool:
         return True
 
     return _tx_claim(_client().transaction())
+
+
+def save_feedback_submission(name: str, email: str, message: str) -> str:
+    doc_ref = _client().collection("feedback_submissions").document()
+    doc_ref.set(
+        {
+            "name": name,
+            "email": email,
+            "message": message,
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+    return doc_ref.id

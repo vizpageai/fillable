@@ -2,6 +2,8 @@
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
 
+project_root = Path(globals().get("SPECPATH", Path.cwd())).resolve()
+
 datas = []
 binaries = []
 hiddenimports = []
@@ -9,7 +11,7 @@ tmp_ret = collect_all('docx')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pptx')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-datas += [(str(Path(__file__).resolve().parent / "fillableicon.ico"), ".")]
+datas += [(str(project_root / "fillableicon.ico"), ".")]
 
 
 a = Analysis(
@@ -34,7 +36,7 @@ exe = EXE(
     a.datas,
     [],
     name='FillableDOC',
-    icon=str(Path(__file__).resolve().parent / "fillableicon.ico"),
+    icon=str(project_root / "fillableicon.ico"),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -13,7 +13,7 @@ if (-not (Test-Path $iss)) {
 }
 
 Write-Host "Building PyInstaller EXE..."
-pyinstaller --noconfirm $spec
+& python -m PyInstaller --noconfirm $spec
 
 if (-not (Test-Path (Join-Path $root "dist\FillableDOC.exe"))) {
     throw "dist\FillableDOC.exe was not produced."

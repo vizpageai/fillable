@@ -5,7 +5,7 @@
 
 #define MyAppName "FillableDOC"
 #define MyAppVersion "2026.02.27.1"
-#define MyAppPublisher "VizpageAI"
+#define MyAppPublisher "vizpageai"
 #define MyAppExeName "FillableDOC.exe"
 #ifndef StoreCapture
 #define StoreCapture "0"
@@ -23,7 +23,7 @@ OutputBaseFilename=FillableDOC-Setup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 
 [Languages]
@@ -47,4 +47,4 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--install-context-menu"; Flags: runhidden
 
 [UninstallRun]
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--uninstall-context-menu"; Flags: runhidden
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--uninstall-context-menu"; Flags: runhidden; RunOnceId: "UninstallContextMenu"

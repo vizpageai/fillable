@@ -684,6 +684,7 @@ def fill_template(
         except Exception as exc:
             body = f"[Could not parse {ctx}: {exc}]"
         context_chunks.append(f"Context file: {ctx}\n{truncate_text(body, 10000)}")
+    joined_context = "\n\n".join(context_chunks) or "None"
 
     placeholders = [p.name for p in template.placeholders] or [sanitize_name(x) for x in template.pdf_form_fields]
     prompt = (
@@ -694,7 +695,7 @@ def fill_template(
         f"Placeholders:\n{placeholders}\n\n"
         f"Extra instructions:\n{extra_instructions.strip() or 'None'}\n\n"
         f"Template metadata:\n{data}\n\n"
-        f"Additional context:\n{'\n\n'.join(context_chunks) or 'None'}"
+        f"Additional context:\n{joined_context}"
     )
     log("Calling AI to generate filled values...")
     result = codex.run_json_prompt(prompt)
@@ -732,6 +733,7 @@ def _generate_values_with_codex(
     context_chunks: list[str],
     record_payload: dict[str, Any] | None = None,
 ) -> dict[str, str]:
+    joined_context = "\n\n".join(context_chunks) or "None"
     prompt = (
         "You fill document placeholders. Return JSON only with schema "
         "{\"values\":{\"PLACEHOLDER\":\"value\"}}. "
@@ -741,7 +743,7 @@ def _generate_values_with_codex(
         f"Extra instructions:\n{extra_instructions.strip() or 'None'}\n\n"
         f"Template metadata:\n{template_metadata}\n\n"
         f"Record data:\n{record_payload or 'None'}\n\n"
-        f"Additional context:\n{'\n\n'.join(context_chunks) or 'None'}"
+        f"Additional context:\n{joined_context}"
     )
     result = codex.run_json_prompt(prompt)
     values_raw = result.parsed_json.get("values", {})

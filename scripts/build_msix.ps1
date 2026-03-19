@@ -1,8 +1,8 @@
 param(
-    [string]$PackageName = "VizpageAI.FillableDOC",
-    [string]$Publisher = "CN=VizpageAI",
+    [string]$PackageName = "vizpageai.Fillable-doc",
+    [string]$Publisher = "CN=BEE49A44-7076-4BB2-A826-91CA37BD22CC",
     [string]$DisplayName = "FillableDOC",
-    [string]$PublisherDisplayName = "VizpageAI",
+    [string]$PublisherDisplayName = "vizpageai",
     [string]$Version = "",
     [string]$RootDir = (Split-Path -Parent $PSScriptRoot),
     [string]$MakeAppxPath = "",
