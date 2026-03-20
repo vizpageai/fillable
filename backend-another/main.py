@@ -1399,13 +1399,16 @@ def auth_google(session_id: str) -> str:
         email: user.email || "",
         uid: user.uid || ""
       }};
-      await fetch("/v1/auth/complete", {{
+      const response = await fetch("/v1/auth/complete", {{
         method: "POST",
         headers: {{ "Content-Type": "application/json" }},
         body: JSON.stringify(payload)
       }});
-      document.body.innerText = "Signed in. You can close this window.";
-      setTimeout(() => window.close(), 1200);
+      if (!response.ok) {{
+        const detail = await response.text();
+        throw new Error(detail || "Unable to complete sign-in.");
+      }}
+      document.body.innerText = "Signed in successfully. Return to the app.";
     }}).catch((err) => {{
       document.body.innerText = "Sign-in failed: " + err.message;
     }});
@@ -1431,15 +1434,15 @@ def auth_complete(payload: dict) -> dict:
         raise HTTPException(status_code=401, detail="Token mismatch.")
     store_auth_session(
         session_id,
-        {{
+        {
             "status": "ok",
             "id_token": id_token,
             "refresh_token": refresh_token,
             "email": email or user.email or "",
             "uid": uid,
-        }},
+        },
     )
-    return {{"ok": True}}
+    return {"ok": True}
 
 
 @app.get("/v1/auth/poll")
